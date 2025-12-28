@@ -8,7 +8,8 @@ Handles the complete flow:
 4. Process high-confidence items automatically
 
 Architecture Options:
-- "hybrid" (default): PlanningLLM + deterministic executor (recommended)
+- "chain" (default): Multi-step LLM chain + deterministic executor (recommended)
+- "hybrid": Single-call PlanningLLM + deterministic executor
 - "agent": Single agent with tool calling (legacy)
 """
 
@@ -17,7 +18,7 @@ from typing import Dict, Any, Optional
 
 from extraction import ExtractAndVerify
 from extraction.audit import ExtractionAudit
-from reasoning import PlanningLLM, OperationExecutor, MasterReasoningOrchestrator
+from reasoning import PlanningLLM, ChainPlanner, OperationExecutor, MasterReasoningOrchestrator
 from audit import UpdateAuditTracker
 from database.models import get_engine
 
@@ -35,7 +36,8 @@ class UniversalOrchestrator:
        - Low confidence (<0.75): Require manual review
     
     Processing Modes:
-    - "hybrid": LLM plans, Python executes (default, more reliable)
+    - "chain": Multi-step LLM chain (default, most reliable)
+    - "hybrid": Single-call PlanningLLM
     - "agent": Single LLM with tool calling (legacy)
     """
     
@@ -47,9 +49,9 @@ class UniversalOrchestrator:
         self,
         api_key: Optional[str] = None,
         audit_db: str = "audit.db",
-        model: str = "gpt-4o",
+        model: str = "gpt-5.2",
         database_path: str = "database/spherecast.db",
-        mode: str = "hybrid"
+        mode: str = "chain"
     ):
         """
         Initialize orchestrator.
@@ -59,7 +61,7 @@ class UniversalOrchestrator:
             audit_db: Path to audit database
             model: LLM model to use
             database_path: Path to main database
-            mode: "hybrid" (recommended) or "agent" (legacy)
+            mode: "chain" (recommended), "hybrid", or "agent" (legacy)
         """
         self.mode = mode
         self.extractor = ExtractAndVerify(api_key=api_key, model=model)
@@ -69,8 +71,17 @@ class UniversalOrchestrator:
         self.db_engine = get_engine(database_path)
         
         # Initialize processing components based on mode
-        if mode == "hybrid":
-            # New architecture: Planning LLM + Deterministic Executor
+        if mode == "chain":
+            # Multi-step chain: 4 focused LLM calls + Deterministic Executor
+            self.planner = ChainPlanner(
+                engine=self.db_engine,
+                api_key=api_key,
+                model=model
+            )
+            self.executor = OperationExecutor(engine=self.db_engine)
+            self.reasoning_agent = None
+        elif mode == "hybrid":
+            # Single-call: PlanningLLM + Deterministic Executor
             self.planner = PlanningLLM(
                 engine=self.db_engine,
                 api_key=api_key,
@@ -254,7 +265,7 @@ class UniversalOrchestrator:
             print(f"STEP 4: DATABASE PROCESSING (mode: {self.mode})")
             print(f"{'─'*70}")
         
-        if self.mode == "hybrid":
+        if self.mode in ("chain", "hybrid"):
             return self._process_hybrid(
                 email_body=email_body,
                 extracted_data=extracted_data,
@@ -262,7 +273,7 @@ class UniversalOrchestrator:
                 document_path=document_path,
                 verbose=verbose
             )
-        else:
+        else:  # "agent" mode
             return self._process_agent(
                 email_body=email_body,
                 extracted_data=extracted_data,
@@ -280,14 +291,16 @@ class UniversalOrchestrator:
         verbose: bool
     ) -> dict:
         """
-        Hybrid processing: LLM plans, Python executes.
+        Hybrid/Chain processing: LLM plans, Python executes.
         
-        More reliable than single-agent approach.
+        Works for both "chain" mode (multi-step) and "hybrid" mode (single-call).
         """
         
-        # Step 1: Planning (single LLM call)
+        mode_name = "CHAIN" if self.mode == "chain" else "HYBRID"
+        
+        # Step 1: Planning
         if verbose:
-            print("\n[HYBRID MODE] Phase 1: Planning...")
+            print(f"\n[{mode_name} MODE] Phase 1: Planning...")
         
         plan_result = self.planner.plan(
             email_body=email_body,
@@ -306,7 +319,7 @@ class UniversalOrchestrator:
         
         # Step 2: Execution (deterministic Python)
         if verbose:
-            print("\n[HYBRID MODE] Phase 2: Execution...")
+            print(f"\n[{mode_name} MODE] Phase 2: Execution...")
         
         exec_result = self.executor.execute(
             plan=plan,
@@ -318,7 +331,7 @@ class UniversalOrchestrator:
         # Build final result
         result = {
             "success": exec_result.get("success", False),
-            "mode": "hybrid",
+            "mode": self.mode,
             "plan": plan,
             "execution": exec_result,
             "records_created": exec_result.get("records_created", []),

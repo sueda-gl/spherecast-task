@@ -28,7 +28,7 @@ class MasterReasoningOrchestrator:
     3. Returns complete operation log
     """
     
-    def __init__(self, engine, api_key: str = None, model: str = "gpt-4o"):
+    def __init__(self, engine, api_key: str = None, model: str = "gpt-5.2"):
         """
         Initialize orchestrator.
         

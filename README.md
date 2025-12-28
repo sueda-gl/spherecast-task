@@ -111,7 +111,7 @@ from prompts import DOCUMENT_EXTRACTION_PROMPT
 
 # Use a different model or settings
 client = LLMClient(
-    model="gpt-4o",  # or another vision-capable model
+    model="gpt-5.2",  # or another vision-capable model
     temperature=0.0   # deterministic extraction
 )
 
@@ -146,7 +146,7 @@ data = client.extract_from_document(
 - Warnings for missing/ambiguous data
 
 ### 5. Vision-First Approach
-- Uses vision-capable LLM (GPT-4o/Claude with vision)
+- Uses vision-capable LLM (GPT-5.2/Claude with vision)
 - Handles both scanned and digital documents uniformly
 - Better understanding of layout and spatial relationships
 - Single-step processing (no separate OCR needed)

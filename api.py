@@ -47,7 +47,7 @@ app.add_middleware(
 orchestrator = UniversalOrchestrator(
     api_key=os.getenv("OPENAI_API_KEY"),
     audit_db="database/audit.db",
-    model="gpt-4o",
+    model="gpt-5.2",
     database_path="database/spherecast.db"
 )
 

@@ -15,7 +15,7 @@ from prompts import DOCUMENT_EXTRACTION_PROMPT, DOCUMENT_EXTRACTION_SCHEMA
 class DocumentExtractor:
     """Handles extraction of purchase order data from documents."""
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-5.2"):
         """
         Initialize document extractor.
         

@@ -192,7 +192,7 @@ class PlanningLLM:
     - Works for any relational schema
     """
     
-    def __init__(self, engine, api_key: str = None, model: str = "gpt-4o"):
+    def __init__(self, engine, api_key: str = None, model: str = "gpt-5.2"):
         """
         Initialize planner.
         

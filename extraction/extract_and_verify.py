@@ -26,7 +26,7 @@ class ExtractAndVerify:
     - Easier to debug (verifier explains issues)
     """
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-5.2"):
         """
         Initialize extractor and verifier.
         

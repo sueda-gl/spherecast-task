@@ -94,7 +94,8 @@ class OperationExecutor:
             with self.engine.begin() as conn:
                 for i, op in enumerate(operations, 1):
                     op_type = op.get("operation")
-                    table = op.get("table")
+                    table = op.get("table", "")
+                    table_lower = table.lower()  # Normalize for consistent placeholder
                     
                     if verbose:
                         print(f"\n[{i}/{len(operations)}] {op_type} {table}")
@@ -104,11 +105,12 @@ class OperationExecutor:
                             result = self._execute_insert(conn, op, created_ids, verbose)
                             
                             if result.get("success"):
-                                # Track created ID for FK substitution
+                                # Track created ID for FK substitution (use lowercase for consistency)
                                 new_id = result.get("id")
                                 if new_id:
-                                    placeholder = f"__NEW_{table}_id"
-                                    created_ids[placeholder] = new_id
+                                    # Store both cases for flexibility
+                                    created_ids[f"__NEW_{table_lower}_id"] = new_id
+                                    created_ids[f"__NEW_{table}_id"] = new_id  # Original case too
                                     # Also track by SKU if available (for product inserts)
                                     if "sku" in op.get("values", {}):
                                         created_ids[f"__NEW_product_sku_{op['values']['sku']}"] = new_id
@@ -198,7 +200,7 @@ class OperationExecutor:
         - Column validation
         - Returns new ID
         """
-        table = op.get("table")
+        table = op.get("table", "").lower()  # Normalize to lowercase
         values = op.get("values", {}).copy()
         reason = op.get("reason", "")
         
@@ -253,7 +255,7 @@ class OperationExecutor:
         - Placeholder substitution in WHERE clause
         - Change tracking
         """
-        table = op.get("table")
+        table = op.get("table", "").lower()  # Normalize to lowercase
         where = op.get("where", {}).copy()
         set_values = op.get("set", {}).copy()
         reason = op.get("reason", "")
@@ -339,19 +341,30 @@ class OperationExecutor:
         Substitute __NEW_<table>_id placeholders with actual IDs.
         
         Also handles SKU-based lookups for product_id.
+        Case-insensitive lookup for placeholders.
         """
         result = {}
         
+        # Build lowercase lookup dict for case-insensitive matching
+        created_ids_lower = {k.lower(): v for k, v in created_ids.items()}
+        
         for key, value in values.items():
-            if isinstance(value, str) and value.startswith("__NEW_"):
+            if isinstance(value, str) and value.upper().startswith("__NEW_"):
+                # Try exact match first
                 if value in created_ids:
                     actual_id = created_ids[value]
                     if verbose:
                         print(f"  → Substituting {value} → {actual_id}")
                     result[key] = actual_id
+                # Try case-insensitive match
+                elif value.lower() in created_ids_lower:
+                    actual_id = created_ids_lower[value.lower()]
+                    if verbose:
+                        print(f"  → Substituting {value} → {actual_id}")
+                    result[key] = actual_id
                 else:
                     # Try SKU-based lookup
-                    sku_match = re.match(r"__NEW_product_sku_(.+)", value)
+                    sku_match = re.match(r"__NEW_product_sku_(.+)", value, re.IGNORECASE)
                     if sku_match:
                         sku = sku_match.group(1)
                         sku_key = f"__NEW_product_sku_{sku}"
