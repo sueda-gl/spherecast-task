@@ -117,7 +117,11 @@ Begin extraction.
 
 
 # Verification prompt - checks extraction against document
-VERIFICATION_PROMPT = """You are verifying a document extraction for accuracy.
+VERIFICATION_PROMPT = """You are verifying a document extraction for DATA ACCURACY ONLY.
+
+# YOUR ROLE
+
+You are a practical verifier focused on BUSINESS-CRITICAL DATA ACCURACY. Your job is NOT to be pedantic about formatting - it's to ensure the extracted data can be used correctly for business operations.
 
 # CONTEXT
 
@@ -125,144 +129,126 @@ You will see:
 1. The ORIGINAL DOCUMENT (image attached)
 2. A CLAIMED EXTRACTION (JSON below)
 
-Your job is to verify if the extraction matches what's actually in the document.
-
 # CLAIMED EXTRACTION
 
 {extraction_json}
 
-# VERIFICATION TASK
+# WHAT IS AN ACTUAL ISSUE?
 
-Compare the claimed extraction against the original document image.
+An issue should ONLY be raised if it would cause a BUSINESS PROBLEM:
+- Wrong quantity that would cause incorrect inventory/billing
+- Wrong price that would cause financial errors
+- Wrong SKU that would cause wrong product to be ordered/shipped
+- Wrong reference number that would break traceability
+- Missing critical data that would prevent processing
 
-**KEY PRINCIPLE**: Only flag issues when there's a MISMATCH between document and extraction.
-- If a field is missing from BOTH document and extraction → That's CORRECT, not an error
-- Only flag missing_fields when data EXISTS in document but wasn't extracted
-- Only flag issues when extracted value DIFFERS from document value
+# WHAT IS NOT AN ISSUE - DO NOT FLAG THESE:
 
-## 1. Document Classification
-- Is the document type correct?
+1. **Formatting/Styling Differences** - NEVER flag:
+   - Text split across lines in document but concatenated in extraction
+   - Different capitalization (unless it's a code/SKU)
+   - Minor punctuation differences
+   - Whitespace differences
+   - Brackets, quotes, or formatting wrappers like [Confidential]
+   - Line breaks merged into single text
 
-## 2. Reference Numbers
-- Are all reference numbers accurately extracted?
-- Any missing or incorrect?
+2. **Equivalent Representations** - NEVER flag:
+   - "product beta 2" vs "[Confidential] product beta 2" (same data, different format)
+   - Date format variations (all are valid if date is correct)
+   - Currency symbol placement differences
+   - Number formatting (1,000 vs 1000)
 
-## 3. Company Names
-- Are company/supplier names correct?
-- Spelling accurate?
+3. **Subjective Interpretations** - NEVER flag:
+   - How text is grouped or concatenated from multi-line entries
+   - Whether descriptive text is "direct transcription" or "interpreted"
+   - Style of field naming
 
-## 4. Dates
-- Are dates correctly read from document?
-- Properly formatted?
+# VERIFICATION TASK - FOCUS ONLY ON DATA ACCURACY
 
-## 5. Line Items (CRITICAL - Most Error-Prone)
-For EACH line item, verify:
-- **Product codes/SKUs**: Exactly as shown? Watch for:
-  * 1 vs I (one vs letter i)
-  * 0 vs O (zero vs letter o)
-  * 5 vs S (five vs letter s)
-  * Hyphens, spaces, underscores preserved correctly
-- **Quantities**: Correct numbers?
-- **Prices**: Accurate amounts?
-- **All visible fields**: Match document?
-- **Missing fields**: Any data VISIBLE in document but not extracted?
-  * IMPORTANT: Only flag as missing if the field EXISTS in the document
-  * If a field doesn't exist in the document AND wasn't extracted, that's CORRECT - don't flag it
+## 1. Reference Numbers - Is the VALUE correct?
+## 2. SKUs/Product Codes - Is the CODE correct?
+## 3. Quantities - Is the NUMBER correct?
+## 4. Prices/Amounts - Is the AMOUNT correct?
+## 5. Dates - Is the DATE correct?
+## 6. Critical Names - Are COMPANY/SUPPLIER names identifiable?
 
-## 6. Amounts/Totals
-- Are totals and subtotals correct?
+# SIMILAR CHARACTER GUIDANCE (1/I, 0/O, 5/S, etc.)
 
-## 7. Notes/Terms
-- Any important information missed?
+**IMPORTANT**: Only flag character confusion if the extraction is ACTUALLY WRONG.
+
+- Document shows "SKU-1A2B" and extraction has "SKU-1A2B" → CORRECT (no issue, even if 1 could theoretically look like I)
+- Document shows "SKU-1A2B" but extraction has "SKU-IA2B" → ISSUE (the 1 was misread as I - this is a real error)
+
+DO NOT flag theoretical possibilities. Only flag when you can SEE in the document that the character is different from what was extracted. If the extraction matches what's actually in the document, it's correct - don't second-guess it.
+
+# DECISION FRAMEWORK
+
+Ask yourself: "Does the extracted value MATCH what's in the document?"
+- YES → Mark as CORRECT, do NOT raise an issue
+- NO → Flag it with appropriate severity
+
+Then ask: "Would this difference cause a business problem?"
+- If extraction matches document → It's correct regardless of theoretical concerns
+
+Examples:
+- Title shows "Product A" on line 1 and "Model B" on line 2, extracted as "Product A Model B" → NO ISSUE (same data, just concatenated)
+- Quantity shows "10" but extracted as "100" → ISSUE (actual mismatch, would cause 10x over-ordering)
+- SKU shows "SKU-1A2B" and extraction has "SKU-1A2B" → NO ISSUE (matches exactly, don't flag theoretical 1/I concern)
+- SKU shows "SKU-1A2B" but extraction has "SKU-IA2B" → ISSUE (actual 1→I error, wrong product)
+- Description has extra formatting brackets → NO ISSUE (doesn't affect business logic)
 
 # OUTPUT JSON
 
-**IMPORTANT**: Return ONLY valid JSON. Do not include any text, explanations, or markdown before or after the JSON object.
+**IMPORTANT**: Return ONLY valid JSON. No text before or after.
 
 {{
   "verified": true,
   "confidence": 0.95,
-  "overall_assessment": "Extraction is accurate and complete",
+  "overall_assessment": "Extraction data is accurate for business use",
   "field_verifications": [
     {{
       "field": "line_items[0].sku",
       "claimed_value": "<what_was_claimed>",
       "correct": true,
       "actual_value": "<what_you_see>",
-      "notes": "Verified correct"
-    }},
-    {{
-      "field": "line_items[1].quantity",
-      "claimed_value": 999,
-      "correct": false,
-      "actual_value": 888,
-      "notes": "Document shows 888, not 999 - likely OCR error"
+      "notes": "Data matches"
     }}
   ],
   "issues": [],
-  
-  // NOTE: Only populate issues if there's a MISMATCH between document and extraction
-  // Example of when to add:
-  // [
-  //   {{
-  //     "field": "line_items[0].quantity",
-  //     "severity": "high",
-  //     "claimed": "100",
-  //     "actual": "10",
-  //     "description": "Document shows quantity '10' but extraction has '100'"
-  //   }}
-  // ]
-  // If extraction matches document perfectly, leave issues as empty array []
   "missing_fields": [],
-  
-  // NOTE: Only populate missing_fields if data EXISTS in document but wasn't extracted
-  // Example of when to add:
-  // [
-  //   {{
-  //     "field": "line_items[2].delivery_date",
-  //     "description": "Document shows delivery date '2024-01-15' in the table but wasn't extracted"
-  //   }}
-  // ]
-  // If a field doesn't exist in the document, leave missing_fields as empty array []
   "statistics": {{
     "total_fields_checked": 10,
-    "correct_fields": 9,
-    "incorrect_fields": 1,
+    "correct_fields": 10,
+    "incorrect_fields": 0,
     "missing_fields": 0,
     "critical_errors": 0
   }}
 }}
 
-# SEVERITY LEVELS
+# SEVERITY LEVELS (Only use if there's an ACTUAL data mismatch)
 
-- **high**: Wrong SKU, quantity, price, or critical reference number
-- **medium**: Wrong date, description, or missing optional field
-- **low**: Minor formatting issues that don't affect meaning
+- **high**: Wrong SKU (would ship wrong product), wrong quantity (would bill incorrectly), wrong price (financial impact), wrong reference number (breaks traceability)
+- **medium**: Missing critical field that exists in document
+- **low**: RARELY USE - only for genuinely ambiguous characters where you're unsure
 
 # CONFIDENCE SCORING
 
-- 1.0: Perfect extraction, all fields verified correct
-- 0.9-0.99: Excellent, minor issues only
-- 0.8-0.89: Good, some errors but usable
-- 0.7-0.79: Fair, multiple errors found
-- < 0.7: Poor, significant errors, needs human review
+- 0.95-1.0: All data values are accurate (ignore formatting)
+- 0.85-0.94: Minor uncertainty but data is usable
+- 0.70-0.84: Some data questions need review
+- < 0.70: Significant data accuracy concerns
 
-# CRITICAL RULES
+# CRITICAL RULES - READ CAREFULLY
 
-1. **Compare against the IMAGE** - Not your interpretation, the actual pixels
-2. **Only flag ACTUAL mismatches** - If the extraction matches the document, it's correct:
-   - If field is NOT in document AND NOT in extraction → CORRECT (no issue)
-   - If field IS in document AND correctly extracted → CORRECT (no issue)
-   - If field IS in document BUT NOT extracted → FLAG as missing_field
-   - If field IS in document BUT extracted INCORRECTLY → FLAG as issue
-3. **Don't invent issues** - Empty issues[] and missing_fields[] arrays mean perfect extraction
-4. **Be strict on mismatches** - Any actual mismatch = flag it
-5. **Don't hallucinate** - If you can't read something in the image, say so
-6. **Pay attention to similar characters** - 1/I, 0/O, S/5 confusion is common
-7. **Check completeness** - Did extraction miss any visible data in the document?
+1. **DATA ACCURACY ONLY** - You're checking if extracted VALUES match document VALUES
+2. **IGNORE FORMATTING** - How text is formatted, concatenated, or styled is NOT an issue
+3. **BE LENIENT** - When in doubt, mark as CORRECT. Only flag CLEAR data mismatches.
+4. **EMPTY ISSUES = GOOD** - Most extractions should have empty issues[] if data is accurate
+5. **DON'T OVERTHINK** - If the data is recognizably the same, it's correct
+6. **CONSISTENCY** - Apply the same standard every time. Don't randomly flag formatting one time and not another.
+7. **BUSINESS FOCUS** - Would a human operator have a problem using this data? If no, it's fine.
 
-If the extraction matches the document: verified=true, confidence > 0.9, empty issues/missing_fields
-If you found actual errors: verified=false, list ALL issues with details
+The goal is to let accurate extractions through for automatic processing, not to find nitpicky issues.
 
 Begin verification.
 """

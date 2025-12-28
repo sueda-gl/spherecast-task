@@ -454,23 +454,26 @@ class UniversalOrchestrator:
         """Build operations list for audit logging."""
         operations = []
         
-        # From created records
+        # From created records - NOTE: use "created" not "create" to match update_tracker expectations
         for rec in exec_result.get("records_created", []):
             operations.append({
-                "action": "create",
+                "action": "created",
                 "table": rec.get("table"),
                 "record_id": rec.get("id"),
-                "data": rec
+                "data": rec.get("values", rec)
             })
         
-        # From updated records
+        # From updated records - NOTE: use "updated" not "update" to match update_tracker expectations
         for rec in exec_result.get("records_updated", []):
-            operations.append({
-                "action": "update",
-                "table": rec.get("table"),
-                "record_id": rec.get("id"),
-                "changes": rec.get("changes")
-            })
+            # Only log if there were actual changes
+            changes = rec.get("changes", {})
+            if changes:
+                operations.append({
+                    "action": "updated",
+                    "table": rec.get("table"),
+                    "record_id": rec.get("id"),
+                    "changes": changes
+                })
         
         return operations
     

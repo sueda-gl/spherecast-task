@@ -232,7 +232,7 @@ class UniversalDatabaseTools:
                 "success": bool,
                 "table": str,
                 "operation": "create",
-                "record_id": int,
+                "record_id": int or str (composite key format "id1-id2"),
                 "record": {...}
             }
         """
@@ -248,8 +248,18 @@ class UniversalDatabaseTools:
                 result = conn.execute(text(query), data)
                 record_id = result.lastrowid
             
-            # Read back created record
-            created_record = self.get_record(table, record_id)
+            # Handle composite primary keys (e.g., supplier_product table)
+            pk_columns = self._get_primary_key(table)
+            if len(pk_columns) > 1:
+                # Composite key - format as "val1-val2-..."
+                record_id = "-".join(str(data.get(pk)) for pk in pk_columns)
+                # Read back using composite key search
+                conditions = {pk: data.get(pk) for pk in pk_columns}
+                created_result = self.search_records(table, conditions, limit=1)
+                created_record = {"record": created_result["records"][0] if created_result["records"] else None}
+            else:
+                # Single primary key - read back as usual
+                created_record = self.get_record(table, record_id)
             
             return {
                 "success": True,
@@ -265,7 +275,7 @@ class UniversalDatabaseTools:
     def update_record(
         self,
         table: str,
-        record_id: int,
+        record_id,  # Can be int or str (for composite keys like "1-5")
         updates: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
@@ -273,14 +283,14 @@ class UniversalDatabaseTools:
         
         Args:
             table: Table name
-            record_id: Record ID to update
+            record_id: Record ID to update (int for single PK, str "id1-id2" for composite)
             updates: Columns to update
             
         Returns:
             {
                 "success": bool,
                 "table": str,
-                "record_id": int,
+                "record_id": int or str,
                 "operation": "update",
                 "changes": {"field": {"old": ..., "new": ...}},
                 "record": {...}
@@ -290,29 +300,62 @@ class UniversalDatabaseTools:
             return {"success": False, "error": f"Table '{table}' does not exist"}
         
         try:
-            # Get old values
-            old_record = self.get_record(table, record_id)
-            if not old_record.get("found"):
-                return {"success": False, "error": f"Record {record_id} not found"}
+            pk_columns = self._get_primary_key(table)
             
-            # Build update query
-            pk_column = self._get_primary_key(table)[0] if self._get_primary_key(table) else "id"
-            set_clause = ", ".join([f"{k} = :{k}" for k in updates.keys()])
-            query = f"UPDATE {table} SET {set_clause} WHERE {pk_column} = :record_id"
-            
-            params = {**updates, "record_id": record_id}
-            
-            with self.engine.begin() as conn:
-                conn.execute(text(query), params)
-            
-            # Read back updated record
-            new_record = self.get_record(table, record_id)
+            # Handle composite primary keys
+            if len(pk_columns) > 1:
+                # Parse composite key (format: "val1-val2")
+                if isinstance(record_id, str) and "-" in record_id:
+                    pk_values = record_id.split("-")
+                    if len(pk_values) != len(pk_columns):
+                        return {"success": False, "error": f"Invalid composite key format. Expected {len(pk_columns)} parts."}
+                    pk_conditions = {pk: int(val) for pk, val in zip(pk_columns, pk_values)}
+                else:
+                    return {"success": False, "error": f"Composite key required for {table}. Format: 'val1-val2'"}
+                
+                # Get old values using search
+                old_result = self.search_records(table, pk_conditions, limit=1)
+                if not old_result["records"]:
+                    return {"success": False, "error": f"Record {record_id} not found"}
+                old_record = {"found": True, "record": old_result["records"][0]}
+                
+                # Build WHERE clause for composite key
+                where_parts = [f"{pk} = :{pk}" for pk in pk_columns]
+                where_clause = " AND ".join(where_parts)
+                set_clause = ", ".join([f"{k} = :{k}" for k in updates.keys()])
+                query = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
+                
+                params = {**updates, **pk_conditions}
+                
+                with self.engine.begin() as conn:
+                    conn.execute(text(query), params)
+                
+                # Read back updated record
+                new_result = self.search_records(table, pk_conditions, limit=1)
+                new_record = {"record": new_result["records"][0] if new_result["records"] else None}
+            else:
+                # Single primary key - original logic
+                pk_column = pk_columns[0] if pk_columns else "id"
+                
+                old_record = self.get_record(table, record_id)
+                if not old_record.get("found"):
+                    return {"success": False, "error": f"Record {record_id} not found"}
+                
+                set_clause = ", ".join([f"{k} = :{k}" for k in updates.keys()])
+                query = f"UPDATE {table} SET {set_clause} WHERE {pk_column} = :record_id"
+                
+                params = {**updates, "record_id": record_id}
+                
+                with self.engine.begin() as conn:
+                    conn.execute(text(query), params)
+                
+                new_record = self.get_record(table, record_id)
             
             # Build changes dict
             changes = {}
             for field in updates.keys():
                 old_val = old_record["record"].get(field)
-                new_val = new_record["record"].get(field)
+                new_val = new_record["record"].get(field) if new_record.get("record") else None
                 if old_val != new_val:
                     changes[field] = {"old": old_val, "new": new_val}
             

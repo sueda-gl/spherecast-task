@@ -4,7 +4,7 @@ Chain Planner - Multi-step LLM architecture for reliable database operations.
 Instead of one big LLM call that juggles many concerns, this breaks planning
 into focused steps:
 
-1. Entity Resolution - Match input entities to database records
+1. Entity Resolution - Match input entities to database records (with tool-calling)
 2. Existence Analysis - Decide INSERT vs UPDATE for each record
 3. Relationship Check - Identify junction table inserts needed
 4. Operation Generation - Generate final SQL operations
@@ -18,68 +18,155 @@ from dataclasses import dataclass
 
 from llm_client import LLMClient
 from reasoning.schema_builder import RichSchemaBuilder
+from reasoning.db_tools import DatabaseTools
+from reasoning.tool_agent import ToolAgent
 
 
 # ============================================================================
-# STEP 1: ENTITY RESOLUTION
+# STEP 1: ENTITY RESOLUTION (Tool-Based with Thinking)
 # ============================================================================
 
-ENTITY_RESOLUTION_PROMPT = """You are an entity resolution specialist. Match entities from the input to existing database records.
+ENTITY_RESOLUTION_SYSTEM_PROMPT = """You are a database analyst specializing in entity resolution.
 
-## DATABASE CURRENT STATE
+## YOUR JOB
 
-{db_snapshot}
+1. **INSPECT the database** - Explore tables, columns, relationships, and constraints
+2. **UNDERSTAND patterns** - Discover how data is structured:
+   - SKU formats (e.g., "SKU-1" vs "SKU-1-3" vs vendor "SKU13")
+   - Reference number patterns (e.g., "PO-12" vs "12")
+   - Mapping tables that link external identifiers to internal IDs
+   - Naming conventions and data relationships
+3. **RESOLVE entities** - Match input data to existing records using your understanding
 
-## INPUT DATA
+## TOOLS AVAILABLE
 
-Context (email):
+- list_tables(): List all tables in the database
+- describe_table(table_name): Get structure, columns, types, constraints, foreign keys
+- get_relationships(table_name): See what tables reference this and what it references
+- query_table(table_name, conditions, limit): Query data to see actual values
+- search_value(value, tables, exact_match): Search for a value across tables
+- get_sample_data(table_name, num_rows): Get sample rows to understand patterns
+
+## THINKING PROCESS (REQUIRED)
+
+You MUST think step-by-step. Before EVERY action, explain:
+- What am I trying to figure out?
+- What do I know so far?
+- What should I check next and why?
+
+After EVERY result, reflect:
+- What did I learn from this?
+- How does this change my understanding?
+- What patterns or relationships do I now see?
+
+## APPROACH
+
+1. **EXPLORE PHASE** - Start by understanding the database
+   - List tables to see what exists
+   - Describe key tables (products, orders, suppliers)
+   - Find mapping/junction tables
+   - Get sample data to see formats
+
+2. **PATTERN PHASE** - Document what you learned
+   - What tables exist and their purposes
+   - How SKUs are formatted
+   - How references are stored
+   - What mapping tables link external to internal IDs
+
+3. **RESOLUTION PHASE** - For each entity in the input:
+   - Search systematically using discovered patterns
+   - Check direct matches first, then mappings
+   - Document your reasoning for each resolution
+   - Determine if entity exists or is new
+
+## PRODUCT RESOLUTION RULES (CRITICAL)
+
+Use match methods in this STRICT ORDER:
+
+1. **EXACT** - SKU in document matches product.sku exactly
+   Example: Document "SKU-1" matches product where sku='SKU-1'
+   
+2. **NORMALIZED** - SKU matches after format normalization
+   Example: Document "SKU13" matches product where sku='SKU-13' (just hyphen difference)
+   
+3. **SUPPLIER_MAPPING** - SKU exists in supplier_product for THIS supplier
+   Example: Document "VENDOR-001" found in supplier_product where supplier_id=X and supplier_sku='VENDOR-001'
+   This maps to an internal product_id
+   
+4. **UNRESOLVED/NEW** - No match found → treat as NEW product
+
+⚠️ **DO NOT USE "contextual" MATCHING** to assume a vendor SKU maps to an unrelated internal SKU!
+   BAD: Assuming "PRODUCT-12" = "SKU-2" without evidence in supplier_product table
+   GOOD: If no supplier_product mapping exists, mark as UNRESOLVED/NEW
+
+The supplier_product table IS the source of truth for vendor→internal SKU mappings.
+If a mapping doesn't exist there, you CANNOT assume the relationship exists!
+
+## FINAL OUTPUT
+
+When you have resolved all entities, return a JSON object (no tool calls):
+
+{
+  "schema_understanding": {
+    "tables_discovered": ["list of relevant tables"],
+    "mapping_tables": ["tables that map external to internal IDs"],
+    "patterns_found": ["SKU format patterns", "reference patterns", "etc"]
+  },
+  "supplier": {
+    "thinking": "How I identified the supplier...",
+    "identified_from": "email/document header/etc",
+    "supplier_id": <int or null>,
+    "supplier_name": "name",
+    "is_new": true/false,
+    "confidence": "HIGH/MEDIUM/LOW"
+  },
+  "purchase_order": {
+    "thinking": "How I resolved the PO reference...",
+    "input_reference": "reference from document",
+    "matched_po_id": <int or null>,
+    "matched_reference": "reference in DB or null",
+    "match_method": "exact/normalized/unresolved",
+    "is_new": true/false,
+    "confidence": "HIGH/MEDIUM/LOW"
+  },
+  "products": {
+    "<input_sku>": {
+      "thinking": "How I resolved this SKU...",
+      "product_id": <int or null>,
+      "internal_sku": "sku in product table or null",
+      "match_method": "exact/normalized/contextual/unresolved",
+      "is_new": true/false,
+      "title_from_input": "product title if available",
+      "confidence": "HIGH/MEDIUM/LOW"
+    }
+  },
+  "context_instructions": [
+    "any special instructions from email that override document values"
+  ]
+}
+
+IMPORTANT: Do NOT return the final JSON until you have thoroughly explored the database and resolved all entities. Use the tools first!"""
+
+ENTITY_RESOLUTION_USER_TEMPLATE = """## TASK
+
+Resolve entities from this document to database records.
+
+## EMAIL CONTEXT
+
 {email_body}
 
-Extracted data:
+## EXTRACTED DATA FROM DOCUMENT
+
 {extracted_data}
 
-## YOUR TASK
+## INSTRUCTIONS
 
-For each identifier in the input (SKUs, reference numbers, etc.), find the matching database record.
+1. First, explore the database to understand its structure
+2. Look for patterns in how data is stored
+3. For each entity (supplier, PO reference, product SKUs), search and resolve
+4. Return your findings as JSON when complete
 
-Resolution methods:
-- **exact**: Direct match (e.g., "SKU-1" matches product.sku = "SKU-1")
-- **normalized**: Match after normalization (e.g., "12" matches "PO-12", "SKU13" matches "SKU-1-3")
-- **contextual**: Match using context (e.g., supplier_product mapping for vendor SKUs)
-- **unresolved**: No match found - this is a NEW entity
-
-## OUTPUT FORMAT
-
-Return ONLY valid JSON:
-
-{{
-  "supplier": {{
-    "identified_from": "<how you identified the supplier - email domain, document header, etc.>",
-    "supplier_id": <int or null if not found>,
-    "supplier_name": "<name>",
-    "is_new": <true if supplier not in database, false if found>
-  }},
-  "purchase_order": {{
-    "input_reference": "<reference from document>",
-    "matched_po_id": <int or null>,
-    "matched_reference": "<reference in DB>",
-    "match_method": "<exact/normalized/unresolved>",
-    "is_new": <true/false>
-  }},
-  "products": {{
-    "<input_sku>": {{
-      "product_id": <int or null>,
-      "internal_sku": "<sku in product table or null>",
-      "match_method": "<exact/normalized/contextual/unresolved>",
-      "is_new": <true/false>,
-      "title_from_input": "<product title if available>"
-    }}
-  }},
-  "context_instructions": [
-    "<any special instructions from email that override document values>"
-  ]
-}}
-"""
+Start by listing the tables to understand the database structure."""
 
 
 # ============================================================================
@@ -168,12 +255,31 @@ RELATIONSHIP_CHECK_PROMPT = """You are a database relationship analyst. Check wh
 
 Supplier ID: {supplier_id}
 
+## ALL PRODUCTS IN THIS DOCUMENT
+
+{all_products}
+
 ## YOUR TASK
 
-For each NEW entity being inserted, check if any junction table records need to be created.
+Check if any junction table records need to be created for this document.
 
-CRITICAL RULE: When a new entity is inserted, check if any junction tables need records too.
-Junction tables link entities together - without the junction record, the relationship doesn't exist.
+CRITICAL RULES:
+
+1. **SUPPLIER_PRODUCT MAPPINGS ARE ALWAYS NEEDED**
+   - When processing a document from a supplier, the supplier may use THEIR OWN SKUs
+   - The supplier_product table maps (supplier_id, product_id) with their supplier_sku
+   - For EVERY product in this document: check if a supplier_product mapping exists for THIS supplier
+   - If mapping doesn't exist → INSERT into supplier_product
+   - This applies whether the product is NEW or EXISTING
+   
+2. **The supplier_sku column stores the vendor's SKU**
+   - If document shows "PRODUCT-12" but internal sku is "SKU-2"
+   - supplier_product should store supplier_sku='PRODUCT-12' linking to product_id=2
+   - This enables future documents from this supplier to resolve correctly
+
+3. **Junction tables link entities**
+   - Without the junction record, the relationship doesn't exist
+   - A product can exist in the product table but have NO relationship to a supplier without supplier_product
 
 ## HOW TO FILL VALUES
 
@@ -248,9 +354,20 @@ Rules:
    - junction tables (supplier_product) → FOURTH
    - purchase_order_lines → LAST (needs purchase_order_id and product_id)
 2. Use "__NEW_<table>_id" placeholders for FK references to newly created records
-3. Include all junction table inserts identified in relationship check
+3. **MUST include ALL junction table inserts from relationship check**
 4. Apply any context instructions (e.g., "push back ETA to 2027")
 5. For UPDATEs, only set fields that have new values
+
+## CRITICAL: SUPPLIER_PRODUCT MAPPINGS
+
+For EVERY product used from a supplier's document:
+- The supplier_product table maps vendor SKUs to internal product IDs
+- If the relationship_check says supplier_product INSERT is needed, YOU MUST include it
+- Values needed:
+  - supplier_id: from entity resolution
+  - product_id: the internal product ID (resolved or __NEW_product_id)
+  - supplier_sku: the vendor's SKU from the document (NOT the internal SKU)
+  - price_per_unit: from document if available (can be null)
 
 ## CRITICAL: FILL ALL COLUMNS - WHERE TO GET DATA
 
@@ -312,7 +429,7 @@ class ChainPlanner:
     Multi-step LLM planner with focused calls.
     
     Each step has a single responsibility:
-    1. Entity Resolution - Match inputs to DB records
+    1. Entity Resolution - Match inputs to DB records (tool-based with thinking)
     2. Existence Analysis - INSERT vs UPDATE decisions
     3. Relationship Check - Junction table needs
     4. Operation Generation - Final SQL operations
@@ -322,6 +439,17 @@ class ChainPlanner:
         self.engine = engine
         self.schema_builder = RichSchemaBuilder(engine)
         self.llm = LLMClient(api_key=api_key, model=model, temperature=0.0)
+        
+        # Tool-based agent for entity resolution
+        self.db_tools = DatabaseTools(engine)
+        self.tool_agent = ToolAgent(
+            db_tools=self.db_tools,
+            api_key=api_key,
+            model=model,
+            temperature=0.0,
+            max_iterations=15,
+            verbose=True
+        )
     
     def plan(
         self,
@@ -444,23 +572,33 @@ class ChainPlanner:
         schema: dict,
         verbose: bool
     ) -> ChainResult:
-        """Step 1: Match input entities to database records."""
+        """Step 1: Match input entities to database records using tool-based exploration."""
         
-        # Build DB snapshot for entity matching
-        db_snapshot = self._format_db_snapshot(schema["data_snapshot"])
-        
-        prompt = ENTITY_RESOLUTION_PROMPT.format(
-            db_snapshot=db_snapshot,
+        # Build user message with the task
+        user_message = ENTITY_RESOLUTION_USER_TEMPLATE.format(
             email_body=email_body,
             extracted_data=json.dumps(extracted_data, indent=2)
         )
         
         try:
-            result = self.llm.call_with_text(
-                prompt="You are an entity resolution specialist. Return JSON.",
-                text=prompt,
-                json_mode=True
+            # Run the tool agent - it will explore the database and resolve entities
+            agent_result = self.tool_agent.run(
+                system_prompt=ENTITY_RESOLUTION_SYSTEM_PROMPT,
+                user_message=user_message
             )
+            
+            if not agent_result.success:
+                return ChainResult(
+                    success=False,
+                    step="entity_resolution",
+                    data={},
+                    error=agent_result.error
+                )
+            
+            result = agent_result.result
+            
+            if verbose:
+                print(f"\n  📊 Agent used {agent_result.total_tool_calls} tool calls")
             
             if verbose:
                 self._print_step1_summary(result)
@@ -527,10 +665,14 @@ class ChainPlanner:
         # Get supplier ID
         supplier_id = entity_resolution.get("supplier", {}).get("supplier_id")
         
+        # Get ALL products from this document (for supplier_product mapping check)
+        all_products = self._format_all_products(entity_resolution, existence_analysis)
+        
         prompt = RELATIONSHIP_CHECK_PROMPT.format(
             junction_tables=junction_tables,
             inserts_planned=json.dumps(inserts_planned, indent=2),
-            supplier_id=supplier_id
+            supplier_id=supplier_id,
+            all_products=all_products
         )
         
         try:
@@ -659,6 +801,35 @@ class ChainPlanner:
                 lines.append("")
         return "\n".join(lines) if lines else "No junction tables defined."
     
+    def _format_all_products(self, entity_resolution: dict, existence_analysis: dict) -> str:
+        """Format all products from this document for relationship checking.
+        
+        This ensures supplier_product mappings are created even for existing products
+        when a new supplier relationship is being established.
+        """
+        lines = []
+        products = entity_resolution.get("products", {})
+        
+        if not products:
+            return "No products in this document."
+        
+        for vendor_sku, info in products.items():
+            product_id = info.get("product_id")
+            internal_sku = info.get("internal_sku", "")
+            match_method = info.get("match_method", "unknown")
+            is_new = info.get("is_new", False)
+            
+            status = "NEW (to be created)" if is_new else f"EXISTS (id={product_id})"
+            lines.append(f"- Vendor SKU: '{vendor_sku}'")
+            lines.append(f"    Status: {status}")
+            lines.append(f"    Internal SKU: '{internal_sku}'")
+            lines.append(f"    Match Method: {match_method}")
+            if product_id:
+                lines.append(f"    Product ID: {product_id}")
+            lines.append("")
+        
+        return "\n".join(lines)
+    
     def _extract_inserts(self, existence_analysis: dict) -> dict:
         """Extract planned INSERTs from existence analysis."""
         inserts = {"products": [], "purchase_order_lines": []}
@@ -683,18 +854,31 @@ class ChainPlanner:
         """Print Step 1 summary."""
         print("\n  📍 Entity Resolution Results:")
         
+        # Schema understanding (if present)
+        schema_understanding = result.get("schema_understanding", {})
+        if schema_understanding:
+            patterns = schema_understanding.get("patterns_found", [])
+            if patterns:
+                print(f"    Patterns discovered: {patterns[:3]}")
+        
         supplier = result.get("supplier", {})
-        print(f"    Supplier: {supplier.get('supplier_name', 'Unknown')} (id={supplier.get('supplier_id')})")
+        confidence = supplier.get("confidence", "")
+        conf_str = f" [{confidence}]" if confidence else ""
+        print(f"    Supplier: {supplier.get('supplier_name', 'Unknown')} (id={supplier.get('supplier_id')}){conf_str}")
         
         po = result.get("purchase_order", {})
-        print(f"    PO: '{po.get('input_reference')}' → {po.get('matched_reference')} (id={po.get('matched_po_id')})")
+        confidence = po.get("confidence", "")
+        conf_str = f" [{confidence}]" if confidence else ""
+        print(f"    PO: '{po.get('input_reference')}' → {po.get('matched_reference')} (id={po.get('matched_po_id')}){conf_str}")
         print(f"        Method: {po.get('match_method')}, New: {po.get('is_new')}")
         
         products = result.get("products", {})
         print(f"    Products: {len(products)}")
         for sku, info in products.items():
             status = "NEW" if info.get("is_new") else f"id={info.get('product_id')}"
-            print(f"      {sku} → {status} ({info.get('match_method')})")
+            confidence = info.get("confidence", "")
+            conf_str = f" [{confidence}]" if confidence else ""
+            print(f"      {sku} → {status} ({info.get('match_method')}){conf_str}")
         
         instructions = result.get("context_instructions", [])
         if instructions:

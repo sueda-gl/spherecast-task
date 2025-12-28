@@ -4,10 +4,13 @@ import {
   FileText, 
   Building2, 
   Search,
-  DollarSign,
   List,
-  Link
+  Link,
+  Eye,
+  History,
+  RefreshCw
 } from 'lucide-react'
+import SourceDocumentViewer from './SourceDocumentViewer'
 
 interface PurchaseOrder {
   id: number
@@ -46,7 +49,37 @@ interface SupplierProduct {
   price_per_unit: number | null
 }
 
+interface Change {
+  id: number
+  extraction_id: number | null
+  timestamp: string | null
+  operation: string
+  field: string | null
+  old_value: string | null
+  new_value: string | null
+  source_document: string | null
+  source_field: string | null
+  source_value: string | null
+  llm_reasoning: string | null
+  confidence: number | null
+  requires_approval: boolean
+  approved: boolean | null
+}
+
+interface ChangesMap {
+  [recordId: string]: Change[]  // Use string to support composite keys
+}
+
 type ViewMode = 'purchase_orders' | 'products' | 'suppliers' | 'po_lines' | 'supplier_products'
+
+// Map view mode to actual table name in database
+const tableNameMap: Record<ViewMode, string> = {
+  'purchase_orders': 'purchase_order',
+  'products': 'product',
+  'suppliers': 'supplier',
+  'po_lines': 'purchase_order_line',
+  'supplier_products': 'supplier_product'
+}
 
 export default function DatabasePage() {
   const [viewMode, setViewMode] = useState<ViewMode>('purchase_orders')
@@ -57,9 +90,19 @@ export default function DatabasePage() {
   const [supplierProducts, setSupplierProducts] = useState<SupplierProduct[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
+  
+  // Change tracking state
+  const [changes, setChanges] = useState<ChangesMap>({})
+  const [loadingChanges, setLoadingChanges] = useState(false)
+  
+  // Modal state
+  const [viewerOpen, setViewerOpen] = useState(false)
+  const [selectedRecordId, setSelectedRecordId] = useState<string | number | null>(null)
+  const [selectedChanges, setSelectedChanges] = useState<Change[]>([])
 
   useEffect(() => {
     fetchData()
+    fetchChanges()
   }, [viewMode])
 
   const fetchData = async () => {
@@ -93,6 +136,62 @@ export default function DatabasePage() {
     }
   }
 
+  const fetchChanges = async () => {
+    setLoadingChanges(true)
+    try {
+      const tableName = tableNameMap[viewMode]
+      const response = await fetch(`/api/database/${tableName}/changes`)
+      const data = await response.json()
+      
+      if (data.success && data.changes) {
+        // Keep keys as strings for flexibility with composite keys
+        const changesMap: ChangesMap = {}
+        Object.entries(data.changes).forEach(([key, value]) => {
+          changesMap[key] = value as Change[]
+        })
+        setChanges(changesMap)
+      } else {
+        setChanges({})
+      }
+    } catch (error) {
+      console.error('Failed to fetch changes:', error)
+      setChanges({})
+    } finally {
+      setLoadingChanges(false)
+    }
+  }
+
+  const handleViewChanges = (recordId: string | number) => {
+    const key = String(recordId)
+    const recordChanges = changes[key] || []
+    setSelectedRecordId(recordId)
+    setSelectedChanges(recordChanges)
+    setViewerOpen(true)
+  }
+
+  const getChangeCount = (recordId: string | number): number => {
+    const key = String(recordId)
+    return changes[key]?.length || 0
+  }
+
+  const hasChanges = (recordId: string | number): boolean => {
+    return getChangeCount(recordId) > 0
+  }
+
+  const ChangeBadge = ({ recordId }: { recordId: string | number }) => {
+    const count = getChangeCount(recordId)
+    if (count === 0) return <span className="text-gray-600">—</span>
+    
+    return (
+      <button
+        onClick={() => handleViewChanges(recordId)}
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 hover:text-blue-300 transition-all text-xs font-medium border border-blue-500/30 hover:border-blue-500/50"
+      >
+        <Eye size={12} />
+        <span>View ({count})</span>
+      </button>
+    )
+  }
 
   const filteredPOs = purchaseOrders.filter(po =>
     po.reference_num?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -122,6 +221,9 @@ export default function DatabasePage() {
     sp.product_id.toString().includes(searchTerm) ||
     sp.supplier_sku?.toLowerCase().includes(searchTerm.toLowerCase())
   )
+
+  // Count total changes across all records
+  const totalChangesCount = Object.values(changes).reduce((sum, arr) => sum + arr.length, 0)
 
   if (loading) {
     return (
@@ -211,9 +313,9 @@ export default function DatabasePage() {
           </div>
         </div>
 
-        {/* Search Bar */}
-        <div className="mb-6">
-          <div className="relative">
+        {/* Search Bar & Change Stats */}
+        <div className="mb-6 flex gap-4 items-center">
+          <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500" size={20} />
             <input
               type="text"
@@ -222,6 +324,26 @@ export default function DatabasePage() {
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-10 pr-4 py-2 bg-dark-surface border border-dark-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
             />
+          </div>
+          
+          {/* Change Statistics */}
+          <div className="flex items-center gap-3">
+            {totalChangesCount > 0 && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                <History size={16} className="text-blue-400" />
+                <span className="text-sm text-blue-400">
+                  {totalChangesCount} tracked change{totalChangesCount !== 1 ? 's' : ''}
+                </span>
+              </div>
+            )}
+            <button
+              onClick={fetchChanges}
+              disabled={loadingChanges}
+              className="p-2 bg-dark-surface border border-dark-border rounded-lg hover:bg-dark-hover transition-colors disabled:opacity-50"
+              title="Refresh changes"
+            >
+              <RefreshCw size={18} className={`text-gray-400 ${loadingChanges ? 'animate-spin' : ''}`} />
+            </button>
           </div>
         </div>
 
@@ -247,11 +369,22 @@ export default function DatabasePage() {
                       <th className="p-4 text-gray-400 font-medium">reference_num</th>
                       <th className="p-4 text-gray-400 font-medium">supplier_id</th>
                       <th className="p-4 text-gray-400 font-medium">delivery_date</th>
+                      <th className="p-4 text-gray-400 font-medium text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <History size={14} />
+                          Changes
+                        </div>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-dark-border">
                     {filteredPOs.map((po) => (
-                      <tr key={po.id} className="hover:bg-dark-hover transition-colors">
+                      <tr 
+                        key={po.id} 
+                        className={`hover:bg-dark-hover transition-colors ${
+                          hasChanges(po.id) ? 'bg-blue-500/5' : ''
+                        }`}
+                      >
                         <td className="p-4 text-gray-500">{po.id}</td>
                         <td className="p-4 text-white font-medium">{po.reference_num || '-'}</td>
                         <td className="p-4 text-white">{po.supplier_id}</td>
@@ -260,6 +393,9 @@ export default function DatabasePage() {
                             ? new Date(po.delivery_date).toLocaleDateString()
                             : '-'
                           }
+                        </td>
+                        <td className="p-4 text-center">
+                          <ChangeBadge recordId={po.id} />
                         </td>
                       </tr>
                     ))}
@@ -290,16 +426,30 @@ export default function DatabasePage() {
                       <th className="p-4 text-gray-400 font-medium">id</th>
                       <th className="p-4 text-gray-400 font-medium">sku</th>
                       <th className="p-4 text-gray-400 font-medium">title</th>
+                      <th className="p-4 text-gray-400 font-medium text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <History size={14} />
+                          Changes
+                        </div>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-dark-border">
                     {filteredProducts.map((product) => (
-                      <tr key={product.id} className="hover:bg-dark-hover transition-colors">
+                      <tr 
+                        key={product.id} 
+                        className={`hover:bg-dark-hover transition-colors ${
+                          hasChanges(product.id) ? 'bg-blue-500/5' : ''
+                        }`}
+                      >
                         <td className="p-4 text-gray-500">{product.id}</td>
                         <td className="p-4">
                           <span className="font-mono text-white">{product.sku}</span>
                         </td>
                         <td className="p-4 text-white">{product.title || '-'}</td>
+                        <td className="p-4 text-center">
+                          <ChangeBadge recordId={product.id} />
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -329,14 +479,28 @@ export default function DatabasePage() {
                       <th className="p-4 text-gray-400 font-medium">id</th>
                       <th className="p-4 text-gray-400 font-medium">name</th>
                       <th className="p-4 text-gray-400 font-medium">email</th>
+                      <th className="p-4 text-gray-400 font-medium text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <History size={14} />
+                          Changes
+                        </div>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-dark-border">
                     {filteredSuppliers.map((supplier) => (
-                      <tr key={supplier.id} className="hover:bg-dark-hover transition-colors">
+                      <tr 
+                        key={supplier.id} 
+                        className={`hover:bg-dark-hover transition-colors ${
+                          hasChanges(supplier.id) ? 'bg-blue-500/5' : ''
+                        }`}
+                      >
                         <td className="p-4 text-gray-500">{supplier.id}</td>
                         <td className="p-4 text-white font-medium">{supplier.name}</td>
                         <td className="p-4 text-gray-400">{supplier.email || '-'}</td>
+                        <td className="p-4 text-center">
+                          <ChangeBadge recordId={supplier.id} />
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -370,12 +534,22 @@ export default function DatabasePage() {
                       <th className="p-4 text-gray-400 font-medium">delivery_date</th>
                       <th className="p-4 text-gray-400 font-medium">unit_price</th>
                       <th className="p-4 text-gray-400 font-medium">total_price</th>
-                      <th className="p-4 text-gray-400 font-medium">notes</th>
+                      <th className="p-4 text-gray-400 font-medium text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <History size={14} />
+                          Changes
+                        </div>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-dark-border">
                     {filteredPOLines.map((line) => (
-                      <tr key={line.id} className="hover:bg-dark-hover transition-colors">
+                      <tr 
+                        key={line.id} 
+                        className={`hover:bg-dark-hover transition-colors ${
+                          hasChanges(line.id) ? 'bg-blue-500/5' : ''
+                        }`}
+                      >
                         <td className="p-4 text-gray-500">{line.id}</td>
                         <td className="p-4 text-white">{line.purchase_order_id}</td>
                         <td className="p-4 text-white">{line.product_id}</td>
@@ -394,8 +568,8 @@ export default function DatabasePage() {
                         <td className="p-4 text-green-400 font-medium">
                           {line.total_price ? `$${line.total_price.toLocaleString()}` : '-'}
                         </td>
-                        <td className="p-4 text-gray-400 text-sm">
-                          {line.notes || '-'}
+                        <td className="p-4 text-center">
+                          <ChangeBadge recordId={line.id} />
                         </td>
                       </tr>
                     ))}
@@ -427,23 +601,40 @@ export default function DatabasePage() {
                       <th className="p-4 text-gray-400 font-medium">product_id</th>
                       <th className="p-4 text-gray-400 font-medium">supplier_sku</th>
                       <th className="p-4 text-gray-400 font-medium">price_per_unit</th>
+                      <th className="p-4 text-gray-400 font-medium text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <History size={14} />
+                          Changes
+                        </div>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-dark-border">
-                    {filteredSupplierProducts.map((sp, idx) => (
-                      <tr key={`${sp.supplier_id}-${sp.product_id}-${idx}`} className="hover:bg-dark-hover transition-colors">
-                        <td className="p-4 text-white">{sp.supplier_id}</td>
-                        <td className="p-4 text-white">{sp.product_id}</td>
-                        <td className="p-4">
-                          <span className="text-white font-mono">
-                            {sp.supplier_sku || '-'}
-                          </span>
-                        </td>
-                        <td className="p-4 text-gray-400">
-                          {sp.price_per_unit ? `$${sp.price_per_unit.toFixed(2)}` : '-'}
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredSupplierProducts.map((sp, idx) => {
+                      const compositeKey = `${sp.supplier_id}-${sp.product_id}`
+                      return (
+                        <tr 
+                          key={`${compositeKey}-${idx}`} 
+                          className={`hover:bg-dark-hover transition-colors ${
+                            hasChanges(compositeKey) ? 'bg-blue-500/5' : ''
+                          }`}
+                        >
+                          <td className="p-4 text-white">{sp.supplier_id}</td>
+                          <td className="p-4 text-white">{sp.product_id}</td>
+                          <td className="p-4">
+                            <span className="text-white font-mono">
+                              {sp.supplier_sku || '-'}
+                            </span>
+                          </td>
+                          <td className="p-4 text-gray-400">
+                            {sp.price_per_unit ? `$${sp.price_per_unit.toFixed(2)}` : '-'}
+                          </td>
+                          <td className="p-4 text-center">
+                            <ChangeBadge recordId={compositeKey} />
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               )}
@@ -451,7 +642,15 @@ export default function DatabasePage() {
           </div>
         )}
       </div>
+
+      {/* Source Document Viewer Modal */}
+      <SourceDocumentViewer
+        isOpen={viewerOpen}
+        onClose={() => setViewerOpen(false)}
+        tableName={tableNameMap[viewMode]}
+        recordId={selectedRecordId || 0}
+        changes={selectedChanges}
+      />
     </div>
   )
 }
-

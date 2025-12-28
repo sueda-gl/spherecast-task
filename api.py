@@ -920,6 +920,204 @@ async def reject_update(update_id: int, reviewer: str = Form(...), reason: str =
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# DATABASE CHANGE TRACKING ENDPOINTS (For "View Change" Feature)
+# ============================================================================
+
+@app.get("/api/database/{table_name}/changes")
+async def get_table_changes(table_name: str, limit: int = 100):
+    """
+    Get all recent changes for a specific database table.
+    Returns changes grouped by record_id for easy display in UI.
+    
+    Args:
+        table_name: Name of the table (purchase_order, product, supplier, etc.)
+        limit: Maximum number of changes to return
+        
+    Returns:
+        Dictionary mapping record_id to list of changes
+    """
+    try:
+        from sqlalchemy import desc
+        from sqlalchemy.orm import Session as SQLSession
+        from audit.update_tracker import DatabaseUpdate, Base
+        
+        session = SQLSession(update_tracker.engine)
+        
+        try:
+            # Get all updates for this table
+            updates = session.query(DatabaseUpdate).filter(
+                DatabaseUpdate.table_name == table_name
+            ).order_by(desc(DatabaseUpdate.timestamp)).limit(limit).all()
+            
+            # Group by record_id
+            changes_by_record = {}
+            for u in updates:
+                record_id = u.record_id
+                if record_id not in changes_by_record:
+                    changes_by_record[record_id] = []
+                
+                changes_by_record[record_id].append({
+                    "id": u.id,
+                    "extraction_id": u.extraction_id,
+                    "timestamp": u.timestamp.isoformat() if u.timestamp else None,
+                    "operation": u.operation,
+                    "field": u.field_name,
+                    "old_value": u.old_value,
+                    "new_value": u.new_value,
+                    "source_document": u.source_document_path,
+                    "source_field": u.source_field,
+                    "source_value": u.source_value,
+                    "llm_reasoning": u.llm_reasoning,
+                    "confidence": u.confidence,
+                    "requires_approval": u.requires_approval,
+                    "approved": u.approved
+                })
+            
+            return {
+                "success": True,
+                "table": table_name,
+                "total_records_with_changes": len(changes_by_record),
+                "changes": changes_by_record
+            }
+        finally:
+            session.close()
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/database/{table_name}/{record_id}/changes")
+async def get_record_changes(table_name: str, record_id: str):
+    """
+    Get all changes for a specific record in a table.
+    
+    Args:
+        table_name: Name of the table
+        record_id: ID of the record
+        
+    Returns:
+        List of all changes made to this record with source document info
+    """
+    try:
+        from sqlalchemy import desc
+        from sqlalchemy.orm import Session as SQLSession
+        from audit.update_tracker import DatabaseUpdate
+        
+        session = SQLSession(update_tracker.engine)
+        
+        try:
+            updates = session.query(DatabaseUpdate).filter(
+                DatabaseUpdate.table_name == table_name,
+                DatabaseUpdate.record_id == record_id
+            ).order_by(desc(DatabaseUpdate.timestamp)).all()
+            
+            changes = []
+            for u in updates:
+                # Get extraction details if available
+                extraction_data = None
+                if u.extraction_id:
+                    extraction = orchestrator.audit.get_extraction(u.extraction_id)
+                    if extraction:
+                        extraction_data = {
+                            "id": extraction.get("id"),
+                            "document_path": extraction.get("document_path"),
+                            "confidence": extraction.get("confidence"),
+                            "verified": extraction.get("verified"),
+                            "extraction_result": extraction.get("extraction_result")
+                        }
+                
+                changes.append({
+                    "id": u.id,
+                    "extraction_id": u.extraction_id,
+                    "timestamp": u.timestamp.isoformat() if u.timestamp else None,
+                    "operation": u.operation,
+                    "field": u.field_name,
+                    "old_value": u.old_value,
+                    "new_value": u.new_value,
+                    "source_document": u.source_document_path,
+                    "source_field": u.source_field,
+                    "source_value": u.source_value,
+                    "llm_reasoning": u.llm_reasoning,
+                    "confidence": u.confidence,
+                    "requires_approval": u.requires_approval,
+                    "approved": u.approved,
+                    "extraction": extraction_data
+                })
+            
+            return {
+                "success": True,
+                "table": table_name,
+                "record_id": record_id,
+                "total_changes": len(changes),
+                "changes": changes
+            }
+        finally:
+            session.close()
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/document-by-path")
+async def get_document_by_path(path: str):
+    """
+    Get a document file by its path.
+    Used by the source document viewer.
+    
+    Args:
+        path: Path to the document file
+        
+    Returns:
+        Document file
+    """
+    from fastapi.responses import FileResponse
+    
+    try:
+        document_path = Path(path)
+        
+        # Security check - only allow files in uploads or audit_storage
+        allowed_dirs = [
+            Path("uploads").resolve(),
+            Path("audit_storage").resolve()
+        ]
+        
+        doc_resolved = document_path.resolve()
+        is_allowed = any(
+            str(doc_resolved).startswith(str(allowed_dir)) 
+            for allowed_dir in allowed_dirs
+        )
+        
+        if not is_allowed:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        if not document_path.exists():
+            raise HTTPException(status_code=404, detail="Document file not found")
+        
+        # Determine media type
+        suffix = document_path.suffix.lower()
+        media_type_map = {
+            '.pdf': 'application/pdf',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+        }
+        media_type = media_type_map.get(suffix, 'application/octet-stream')
+        
+        return FileResponse(
+            path=str(document_path),
+            media_type=media_type,
+            filename=document_path.name
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

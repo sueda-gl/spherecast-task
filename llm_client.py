@@ -5,7 +5,7 @@ Simple wrapper around OpenAI API with support for text and vision inputs.
 """
 
 import os
-from typing import Optional, Union
+from typing import Optional, Union, List, Dict, Any
 from pathlib import Path
 import base64
 import json
@@ -105,6 +105,67 @@ class LLMClient:
         ]
         
         return self._make_api_call(messages, json_mode)
+    
+    def call_with_tools(
+        self,
+        system_prompt: str,
+        user_message: str,
+        tools: List[Dict[str, Any]],
+        tool_choice: str = "auto"
+    ):
+        """
+        Call LLM with function calling (tools) support.
+        
+        Args:
+            system_prompt: System prompt with instructions
+            user_message: User message/task
+            tools: List of tool definitions (OpenAI function calling format)
+            tool_choice: Tool choice mode ("auto", "none", or specific tool)
+        
+        Returns:
+            Raw OpenAI ChatCompletion response for handling tool calls
+        """
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+        
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=self.temperature
+        )
+        
+        return response
+    
+    def call_with_tools_conversation(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        tool_choice: str = "auto"
+    ):
+        """
+        Continue a conversation with tools (for multi-turn tool calling).
+        
+        Args:
+            messages: Full conversation history including tool results
+            tools: List of tool definitions
+            tool_choice: Tool choice mode
+        
+        Returns:
+            Raw OpenAI ChatCompletion response
+        """
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=self.temperature
+        )
+        
+        return response
     
     def _make_api_call(self, messages: list, json_mode: bool) -> dict:
         """Make the actual API call."""

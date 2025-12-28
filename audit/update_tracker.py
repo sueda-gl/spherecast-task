@@ -27,7 +27,7 @@ class DatabaseUpdate(Base):
     
     # What changed
     table_name = Column(String, nullable=False, index=True)
-    record_id = Column(Integer, nullable=False)
+    record_id = Column(String, nullable=False)  # String to support composite keys like "1-5"
     operation = Column(String, nullable=False)  # 'create', 'update', 'delete'
     field_name = Column(String)  # Specific field for updates
     
@@ -102,7 +102,7 @@ class UpdateAuditTracker:
             return None  # Don't log failed operations
         
         table = operation_result.get("table")
-        record_id = operation_result.get("record_id")
+        record_id = str(operation_result.get("record_id"))  # Convert to string for composite key support
         operation = operation_result.get("operation")
         
         session = Session(self.engine)
