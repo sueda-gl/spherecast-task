@@ -117,11 +117,16 @@ async def init_database(secret: str = ""):
         
         db_path = Path("database/spherecast.db")
         
-        # Check if database already has data
+        # Get engine
         engine = get_engine(str(db_path))
-        session = get_session(engine)
         
+        # FIRST: Create tables (this is safe to call multiple times - it won't drop existing data)
+        Base.metadata.create_all(engine)
+        
+        # THEN: Check if database already has data
+        session = get_session(engine)
         existing_products = session.query(Product).count()
+        
         if existing_products > 0:
             session.close()
             return {
@@ -129,9 +134,6 @@ async def init_database(secret: str = ""):
                 "message": f"Database already has {existing_products} products. Not reinitializing.",
                 "hint": "Delete the database file manually if you want to reset."
             }
-        
-        # Create tables
-        Base.metadata.create_all(engine)
         
         # Seed data
         seed_data(session)
