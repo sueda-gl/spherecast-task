@@ -92,6 +92,50 @@ def get_update_tracker():
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+# =============================================================================
+# AUTO-INITIALIZE DATABASE ON STARTUP (for deployments without persistent volumes)
+# =============================================================================
+def auto_init_database():
+    """Automatically initialize database if tables don't exist."""
+    try:
+        from database.models import Base, get_engine, get_session, Product
+        from database.setup import seed_data
+        from pathlib import Path
+        
+        db_path = Path("database/spherecast.db")
+        db_path.parent.mkdir(exist_ok=True)
+        
+        engine = get_engine(str(db_path))
+        
+        # Create tables (safe to call multiple times)
+        Base.metadata.create_all(engine)
+        
+        # Check if data exists
+        session = get_session(engine)
+        existing_products = session.query(Product).count()
+        
+        if existing_products == 0:
+            print("📦 Auto-initializing database with seed data...")
+            seed_data(session)
+            print("✅ Database initialized successfully!")
+        else:
+            print(f"✅ Database already has {existing_products} products")
+        
+        session.close()
+        
+        # Also initialize audit database
+        from audit.update_tracker import Base as AuditBase
+        audit_path = Path("database/audit.db")
+        audit_engine = get_engine(str(audit_path))
+        AuditBase.metadata.create_all(audit_engine)
+        print("✅ Audit database ready")
+        
+    except Exception as e:
+        print(f"⚠️ Database auto-init warning: {e}")
+
+# Run on startup
+auto_init_database()
+
 
 @app.get("/api/health")
 async def health_check():
