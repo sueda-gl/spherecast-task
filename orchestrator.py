@@ -7,10 +7,9 @@ Handles the complete flow:
 3. Route based on confidence (auto-process vs human review)
 4. Process high-confidence items automatically
 
-Architecture Options:
-- "chain" (default): Multi-step LLM chain + deterministic executor (recommended)
-- "hybrid": Single-call PlanningLLM + deterministic executor
-- "agent": Single agent with tool calling (legacy)
+Architecture:
+- ChainPlanner: Multi-step LLM chain for entity resolution and operation planning
+- OperationExecutor: Deterministic SQL executor
 """
 
 from pathlib import Path
@@ -18,7 +17,7 @@ from typing import Dict, Any, Optional
 
 from extraction import ExtractAndVerify
 from extraction.audit import ExtractionAudit
-from reasoning import PlanningLLM, ChainPlanner, OperationExecutor, MasterReasoningOrchestrator
+from reasoning import ChainPlanner, OperationExecutor
 from audit import UpdateAuditTracker
 from database.models import get_engine
 
@@ -34,11 +33,6 @@ class UniversalOrchestrator:
        - High confidence (>0.90): Auto-process
        - Medium confidence (0.75-0.90): Queue for review
        - Low confidence (<0.75): Require manual review
-    
-    Processing Modes:
-    - "chain": Multi-step LLM chain (default, most reliable)
-    - "hybrid": Single-call PlanningLLM
-    - "agent": Single LLM with tool calling (legacy)
     """
     
     # Confidence thresholds for routing
@@ -50,8 +44,7 @@ class UniversalOrchestrator:
         api_key: Optional[str] = None,
         audit_db: str = "audit.db",
         model: str = "gpt-5.2",
-        database_path: str = "database/spherecast.db",
-        mode: str = "chain"
+        database_path: str = "database/spherecast.db"
     ):
         """
         Initialize orchestrator.
@@ -61,43 +54,20 @@ class UniversalOrchestrator:
             audit_db: Path to audit database
             model: LLM model to use
             database_path: Path to main database
-            mode: "chain" (recommended), "hybrid", or "agent" (legacy)
         """
-        self.mode = mode
         self.extractor = ExtractAndVerify(api_key=api_key, model=model)
         self.audit = ExtractionAudit(db_path=audit_db)
         
         # Initialize database engine
         self.db_engine = get_engine(database_path)
         
-        # Initialize processing components based on mode
-        if mode == "chain":
-            # Multi-step chain: 4 focused LLM calls + Deterministic Executor
-            self.planner = ChainPlanner(
-                engine=self.db_engine,
-                api_key=api_key,
-                model=model
-            )
-            self.executor = OperationExecutor(engine=self.db_engine)
-            self.reasoning_agent = None
-        elif mode == "hybrid":
-            # Single-call: PlanningLLM + Deterministic Executor
-            self.planner = PlanningLLM(
-                engine=self.db_engine,
-                api_key=api_key,
-                model=model
-            )
-            self.executor = OperationExecutor(engine=self.db_engine)
-            self.reasoning_agent = None
-        else:
-            # Legacy architecture: Single agent with tool calling
-            self.reasoning_agent = MasterReasoningOrchestrator(
-                engine=self.db_engine,
-                api_key=api_key,
-                model=model
-            )
-            self.planner = None
-            self.executor = None
+        # Initialize processing components
+        self.planner = ChainPlanner(
+            engine=self.db_engine,
+            api_key=api_key,
+            model=model
+        )
+        self.executor = OperationExecutor(engine=self.db_engine)
         
         self.update_tracker = UpdateAuditTracker(db_path=audit_db)
     
@@ -245,9 +215,8 @@ class UniversalOrchestrator:
         """
         Automatic processing for high-confidence extractions.
         
-        Two modes:
-        - "hybrid": PlanningLLM generates plan, OperationExecutor runs it
-        - "agent": Single LLM with tool calling (legacy)
+        Uses ChainPlanner for multi-step entity resolution and planning,
+        then OperationExecutor for deterministic SQL execution.
         
         Args:
             email_body: Email content
@@ -262,45 +231,12 @@ class UniversalOrchestrator:
         
         if verbose:
             print(f"\n{'─'*70}")
-            print(f"STEP 4: DATABASE PROCESSING (mode: {self.mode})")
+            print("STEP 4: DATABASE PROCESSING")
             print(f"{'─'*70}")
         
-        if self.mode in ("chain", "hybrid"):
-            return self._process_hybrid(
-                email_body=email_body,
-                extracted_data=extracted_data,
-                extraction_id=extraction_id,
-                document_path=document_path,
-                verbose=verbose
-            )
-        else:  # "agent" mode
-            return self._process_agent(
-                email_body=email_body,
-                extracted_data=extracted_data,
-                extraction_id=extraction_id,
-                document_path=document_path,
-                verbose=verbose
-            )
-    
-    def _process_hybrid(
-        self,
-        email_body: str,
-        extracted_data: dict,
-        extraction_id: int,
-        document_path: str,
-        verbose: bool
-    ) -> dict:
-        """
-        Hybrid/Chain processing: LLM plans, Python executes.
-        
-        Works for both "chain" mode (multi-step) and "hybrid" mode (single-call).
-        """
-        
-        mode_name = "CHAIN" if self.mode == "chain" else "HYBRID"
-        
-        # Step 1: Planning
+        # Phase 1: Planning (multi-step LLM chain)
         if verbose:
-            print(f"\n[{mode_name} MODE] Phase 1: Planning...")
+            print("\n[CHAIN] Phase 1: Planning...")
         
         plan_result = self.planner.plan(
             email_body=email_body,
@@ -317,9 +253,9 @@ class UniversalOrchestrator:
         
         plan = plan_result["plan"]
         
-        # Step 2: Execution (deterministic Python)
+        # Phase 2: Execution (deterministic Python)
         if verbose:
-            print(f"\n[{mode_name} MODE] Phase 2: Execution...")
+            print("\n[CHAIN] Phase 2: Execution...")
         
         exec_result = self.executor.execute(
             plan=plan,
@@ -331,7 +267,6 @@ class UniversalOrchestrator:
         # Build final result
         result = {
             "success": exec_result.get("success", False),
-            "mode": self.mode,
             "plan": plan,
             "execution": exec_result,
             "records_created": exec_result.get("records_created", []),
@@ -361,69 +296,8 @@ class UniversalOrchestrator:
         
         return result
     
-    def _process_agent(
-        self,
-        email_body: str,
-        extracted_data: dict,
-        extraction_id: int,
-        document_path: str,
-        verbose: bool
-    ) -> dict:
-        """
-        Legacy agent processing: Single LLM with tool calling.
-        """
-        
-        # Let the reasoning agent process (with full debugging visibility)
-        result = self.reasoning_agent.process(
-            email_body=email_body,
-            extracted_data=extracted_data,
-            verbose=verbose
-        )
-        
-        if verbose:
-            print(f"✓ Reasoning complete in {result.get('iterations', 0)} iterations")
-            print(f"  Tables affected: {', '.join(result.get('tables_affected', []))}")
-            print(f"  Operations: {len(result.get('operations', []))}")
-        
-        # Log all database operations to update tracker
-        operations = result.get("operations", [])
-        reasoning_trail = result.get("reasoning_trail", [])
-        
-        # If no operations in final result, extract from reasoning trail
-        if not operations and reasoning_trail:
-            operations = []
-            for step in reasoning_trail:
-                if step.get("tool") in ["create_record", "update_record"] and step.get("result", {}).get("success"):
-                    operations.append({
-                        "step": step.get("iteration"),
-                        "action": step["tool"].replace("_record", "d"),
-                        "table": step["result"]["table"],
-                        "record_id": step["result"].get("record_id"),
-                        "data": step["result"].get("record"),
-                        "changes": step["result"].get("changes"),
-                        "result": step["result"]
-                    })
-            
-            if operations and verbose:
-                print(f"⚠ Extracted {len(operations)} operations from reasoning trail")
-        
-        if operations:
-            update_ids = self.update_tracker.log_batch_operations(
-                extraction_id=extraction_id,
-                operations=operations,
-                source_document_path=document_path,
-                overall_reasoning=result.get("reasoning", result.get("summary", "Operation completed")),
-                confidence=result.get("confidence", 0.85)
-            )
-            result["update_ids"] = update_ids
-            
-            if verbose:
-                print(f"✓ Logged {len(update_ids)} database updates to audit trail")
-        
-        return result
-    
     def _build_summary(self, plan: dict, exec_result: dict) -> str:
-        """Build human-readable summary from plan and execution result."""
+        """Build detailed human-readable summary from plan and execution result."""
         parts = []
         
         # PO info
@@ -434,21 +308,54 @@ class UniversalOrchestrator:
         else:
             parts.append(f"Updated existing purchase order '{po_ref.get('matched_reference')}' (ID {po_ref.get('matched_po_id')})")
         
-        # Operations
-        created = len(exec_result.get("records_created", []))
-        updated = len(exec_result.get("records_updated", []))
+        # Detailed operation descriptions
+        for rec in exec_result.get("records_created", []):
+            table = rec.get("table", "record")
+            values = rec.get("values", {})
+            
+            if table == "product":
+                sku = values.get("sku", "unknown")
+                title = values.get("title", "")
+                parts.append(f"Created new product: SKU='{sku}', Title='{title}'")
+            elif table == "purchase_order_line":
+                product_id = values.get("product_id", "?")
+                qty = values.get("quantity", "?")
+                date = values.get("delivery_date", "?")
+                parts.append(f"Created PO line: product_id={product_id}, quantity={qty}, delivery_date={date}")
+            elif table == "supplier_product":
+                supplier_sku = values.get("supplier_sku", "")
+                parts.append(f"Created supplier-product mapping: vendor_sku='{supplier_sku}'")
+            else:
+                parts.append(f"Created {table} record (ID: {rec.get('id', '?')})")
         
-        if created:
-            parts.append(f"Created {created} record(s)")
-        if updated:
-            parts.append(f"Updated {updated} record(s)")
+        for rec in exec_result.get("records_updated", []):
+            table = rec.get("table", "record")
+            record_id = rec.get("id", "?")
+            changes = rec.get("changes", {})
+            
+            if changes:
+                change_details = []
+                for field, change in changes.items():
+                    old_val = change.get("old", "null")
+                    new_val = change.get("new", "null")
+                    change_details.append(f"{field}: '{old_val}' → '{new_val}'")
+                
+                parts.append(f"Updated {table} (ID {record_id}): {', '.join(change_details)}")
+            else:
+                parts.append(f"Updated {table} (ID {record_id})")
         
         # Email overrides
         overrides = plan.get("email_overrides", [])
         if overrides:
-            parts.append(f"Applied {len(overrides)} email override(s)")
+            override_details = [f"'{o.get('field', '?')}' overridden from email" for o in overrides[:3]]
+            parts.append(f"Applied email overrides: {', '.join(override_details)}")
         
-        return ". ".join(parts) + "."
+        # Context instructions from chain results
+        context_instructions = plan.get("context_instructions", [])
+        if context_instructions and isinstance(context_instructions, list) and len(context_instructions) > 0:
+            parts.append(f"Context instructions applied: {'; '.join(context_instructions[:3])}")
+        
+        return "\n\n".join(parts) if parts else "No operations performed."
     
     def _build_operations_list(self, plan: dict, exec_result: dict) -> list:
         """Build operations list for audit logging."""

@@ -52,24 +52,10 @@ class ExtractionLog(Base):
 
 
 class ExtractionAudit:
-    """
-    Simple audit system for extraction tracking.
-    
-    Logs every extraction with full details for:
-    - Debugging extraction issues
-    - Compliance/audit trail
-    - Performance monitoring
-    - Training data collection
-    """
+
     
     def __init__(self, db_path: str = "audit.db", storage_dir: str = "./audit_storage"):
-        """
-        Initialize audit system.
-        
-        Args:
-            db_path: Path to SQLite database
-            storage_dir: Directory to store original documents
-        """
+
         # Ensure the database path is absolute and the directory exists
         db_path = Path(db_path).resolve()
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -150,13 +136,7 @@ class ExtractionAudit:
         extraction_id: int,
         status: str
     ):
-        """
-        Update processing status.
-        
-        Args:
-            extraction_id: ID from log_extraction
-            status: New status ('extracted', 'processing', 'completed', 'failed')
-        """
+
         session = Session(self.engine)
         try:
             log_entry = session.query(ExtractionLog).get(extraction_id)
@@ -171,13 +151,6 @@ class ExtractionAudit:
         extraction_id: int, 
         result: Dict[str, Any]
     ):
-        """
-        Update extraction record with processing result.
-        
-        Args:
-            extraction_id: ID from log_extraction
-            result: Processing result (what was done with the extraction)
-        """
         session = Session(self.engine)
         try:
             log_entry = session.query(ExtractionLog).get(extraction_id)
@@ -195,16 +168,7 @@ class ExtractionAudit:
         priority: Optional[str] = None,
         limit: int = 50
     ) -> List[ExtractionLog]:
-        """
-        Get items that need human review.
-        
-        Args:
-            priority: Filter by priority ('high', 'medium', 'low')
-            limit: Max items to return
-            
-        Returns:
-            List of ExtractionLog entries needing review
-        """
+        """Get items that need human review."""
         session = Session(self.engine)
         try:
             query = session.query(ExtractionLog).filter(
@@ -231,14 +195,6 @@ class ExtractionAudit:
         reviewer: str,
         notes: Optional[str] = None
     ):
-        """
-        Mark an extraction as reviewed by human.
-        
-        Args:
-            extraction_id: ID of extraction
-            reviewer: Name/ID of reviewer
-            notes: Optional review notes
-        """
         session = Session(self.engine)
         try:
             log_entry = session.query(ExtractionLog).get(extraction_id)
@@ -251,16 +207,6 @@ class ExtractionAudit:
             session.close()
     
     def get_all_extractions(self, limit: int = 100) -> list:
-        """
-        Get all extractions from the database.
-        
-        Args:
-            limit: Maximum number of extractions to return
-            
-        Returns:
-            List of extraction records
-        """
-        
         session = Session(self.engine)
         try:
             logs = session.query(ExtractionLog).order_by(
@@ -298,16 +244,6 @@ class ExtractionAudit:
             session.close()
     
     def get_extraction(self, extraction_id: int) -> dict:
-        """
-        Get a specific extraction by ID.
-        
-        Args:
-            extraction_id: The extraction ID
-            
-        Returns:
-            Extraction record or None if not found
-        """
-        
         session = Session(self.engine)
         try:
             log = session.query(ExtractionLog).get(extraction_id)
@@ -342,15 +278,6 @@ class ExtractionAudit:
             session.close()
     
     def get_statistics(self, days: int = 7) -> Dict[str, Any]:
-        """
-        Get extraction statistics for monitoring.
-        
-        Args:
-            days: Look back this many days
-            
-        Returns:
-            Statistics dict
-        """
         from sqlalchemy import func
         from datetime import timedelta
         
@@ -387,16 +314,7 @@ class ExtractionAudit:
             session.close()
     
     def _store_document(self, document_path: str, email_id: str) -> str:
-        """
-        Store document in permanent audit storage.
-        
-        Args:
-            document_path: Original document path
-            email_id: Email ID for organization
-            
-        Returns:
-            Path to stored document
-        """
+        """Store document in permanent audit storage."""
         doc_path = Path(document_path)
         if not doc_path.exists():
             return document_path  # Return original path if file doesn't exist
@@ -412,15 +330,7 @@ class ExtractionAudit:
         return str(stored_path)
     
     def _hash_file(self, file_path: str) -> str:
-        """
-        Calculate SHA256 hash of file for integrity verification.
-        
-        Args:
-            file_path: Path to file
-            
-        Returns:
-            Hex digest of SHA256 hash
-        """
+        """Calculate SHA256 hash for integrity verification."""
         file_path = Path(file_path)
         if not file_path.exists():
             return ""

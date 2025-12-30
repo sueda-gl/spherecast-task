@@ -201,6 +201,12 @@ Examples:
 
 **IMPORTANT**: Return ONLY valid JSON. No text before or after.
 
+**CRITICAL FOR ISSUES**: When there IS a mismatch, you MUST be EXTREMELY SPECIFIC:
+- Include the EXACT value you see in the document image
+- Include the EXACT value from the JSON extraction
+- Explain PRECISELY what is different and why it matters
+- Use the fields: document_value, extracted_value, and specific_difference
+
 {{
   "verified": true,
   "confidence": 0.95,
@@ -225,6 +231,42 @@ Examples:
   }}
 }}
 
+## ISSUE FORMAT (REQUIRED when there's a mismatch):
+
+When you find an issue, you MUST use this EXACT format with ALL fields:
+
+{{
+  "issues": [
+    {{
+      "field": "line_items[0].quantity",
+      "severity": "high",
+      "document_value": "50",
+      "extracted_value": "500",
+      "specific_difference": "The document clearly shows quantity '50' in the table row, but the JSON has '500'. This is a 10x error that would cause massive over-ordering.",
+      "business_impact": "Would order 450 extra units, causing inventory and billing errors.",
+      "location_in_document": "Row 1 of the line items table, 'Qty' column"
+    }},
+    {{
+      "field": "reference_numbers[0].value",
+      "severity": "high",
+      "document_value": "PO-2024-001",
+      "extracted_value": "PO-2024-OO1",
+      "specific_difference": "The document shows 'PO-2024-001' with zeros, but the JSON has 'PO-2024-OO1' with letter O's instead of number 0's.",
+      "business_impact": "PO reference won't match in the system, breaking traceability.",
+      "location_in_document": "Header section, 'Purchase Order Number' field"
+    }},
+    {{
+      "field": "line_items[2].sku",
+      "severity": "high",
+      "document_value": "PROD-1234",
+      "extracted_value": "PROD-I234",
+      "specific_difference": "The document shows 'PROD-1234' with number 1, but extraction has 'PROD-I234' with letter I. This is an OCR misread.",
+      "business_impact": "Would order the wrong product entirely.",
+      "location_in_document": "Row 3, 'SKU' column"
+    }}
+  ]
+}}
+
 # SEVERITY LEVELS (Only use if there's an ACTUAL data mismatch)
 
 - **high**: Wrong SKU (would ship wrong product), wrong quantity (would bill incorrectly), wrong price (financial impact), wrong reference number (breaks traceability)
@@ -247,8 +289,10 @@ Examples:
 5. **DON'T OVERTHINK** - If the data is recognizably the same, it's correct
 6. **CONSISTENCY** - Apply the same standard every time. Don't randomly flag formatting one time and not another.
 7. **BUSINESS FOCUS** - Would a human operator have a problem using this data? If no, it's fine.
+8. **BE SPECIFIC ON ERRORS** - When there IS an error, be EXTREMELY specific. Include exact values from both document and JSON.
 
 The goal is to let accurate extractions through for automatic processing, not to find nitpicky issues.
+But when there ARE real errors, explain them clearly so humans understand exactly what went wrong.
 
 Begin verification.
 """

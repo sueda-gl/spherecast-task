@@ -54,7 +54,7 @@ class OperationExecutor:
         Execute operation plan.
         
         Args:
-            plan: Operation plan from PlanningLLM
+            plan: Operation plan from ChainPlanner
             extraction_id: For audit logging
             source_document_path: For audit logging
             verbose: Print progress
@@ -87,15 +87,18 @@ class OperationExecutor:
             print(f"\n📋 Executing {len(operations)} operations...")
         
         # Track newly created IDs for placeholder substitution
-        # Format: {"__NEW_product_id": 7, "__NEW_purchase_order_id": 4}
+        # Uses CANONICAL format: "table:identifier" for bulletproof matching
+        # e.g., "product:SKU-7" → 6, "purchase_order:TR-45678" → 3
         created_ids = {}
+        # Also store by table for generic lookups (last created of each type)
+        created_by_table = {}
         
         try:
             with self.engine.begin() as conn:
                 for i, op in enumerate(operations, 1):
                     op_type = op.get("operation")
                     table = op.get("table", "")
-                    table_lower = table.lower()  # Normalize for consistent placeholder
+                    table_lower = table.lower()  # Normalize for consistent lookup
                     
                     if verbose:
                         print(f"\n[{i}/{len(operations)}] {op_type} {table}")
@@ -105,21 +108,34 @@ class OperationExecutor:
                             result = self._execute_insert(conn, op, created_ids, verbose)
                             
                             if result.get("success"):
-                                # Track created ID for FK substitution (use lowercase for consistency)
                                 new_id = result.get("id")
                                 if new_id:
-                                    # Store multiple placeholder formats for flexibility
-                                    created_ids[f"__NEW_{table_lower}_id"] = new_id
-                                    created_ids[f"__NEW_{table}_id"] = new_id  # Original case too
+                                    # Store by table for generic lookups
+                                    created_by_table[table_lower] = new_id
                                     
-                                    # Track by SKU for product inserts (multiple formats)
-                                    if "sku" in op.get("values", {}):
+                                    # CANONICAL STORAGE: "table:identifier" format
+                                    # This is bulletproof - we extract identifier and store simply
+                                    if table_lower == "product" and "sku" in op.get("values", {}):
                                         sku = op['values']['sku']
-                                        # Format: __NEW_product_sku_ITEM-25
-                                        created_ids[f"__NEW_product_sku_{sku}"] = new_id
-                                        # Format: __NEW_product_id_ITEM-25 (LLM often uses this)
-                                        created_ids[f"__NEW_product_id_{sku}"] = new_id
-                                        created_ids[f"__NEW_{table_lower}_id_{sku}"] = new_id
+                                        # Normalize: lowercase, strip whitespace
+                                        canonical_key = f"product:{sku.lower().strip()}"
+                                        created_ids[canonical_key] = new_id
+                                        if verbose:
+                                            print(f"    📌 Registered: {canonical_key} → {new_id}")
+                                    
+                                    elif table_lower == "purchase_order" and "reference_num" in op.get("values", {}):
+                                        ref = op['values']['reference_num']
+                                        canonical_key = f"purchase_order:{ref.lower().strip()}"
+                                        created_ids[canonical_key] = new_id
+                                        if verbose:
+                                            print(f"    📌 Registered: {canonical_key} → {new_id}")
+                                    
+                                    elif table_lower == "supplier" and "name" in op.get("values", {}):
+                                        name = op['values']['name']
+                                        canonical_key = f"supplier:{name.lower().strip()}"
+                                        created_ids[canonical_key] = new_id
+                                        if verbose:
+                                            print(f"    📌 Registered: {canonical_key} → {new_id}")
                                 
                                 results["records_created"].append({
                                     "table": table,
@@ -401,62 +417,123 @@ class OperationExecutor:
         """
         Substitute __NEW_<table>_id placeholders with actual IDs.
         
-        Also handles SKU-based lookups for product_id.
-        Case-insensitive lookup for placeholders.
-        Handles SKU format variations (hyphens vs underscores).
+        BULLETPROOF APPROACH:
+        1. Extract the table type (product, purchase_order, supplier)
+        2. Extract the identifier (SKU, reference number, etc.)
+        3. Look up using canonical key: "table:identifier"
+        
+        This handles ANY placeholder format the LLM might generate:
+        - __NEW_product_id_SKU-7
+        - __NEW_product_id_for_SKU-7__
+        - __NEW_product_sku_SKU-7
+        - __NEW_PRODUCT_ID_SKU-7
+        All resolve to canonical lookup: "product:sku-7"
         """
         result = {}
         
-        # Build normalized lookup dict for flexible matching
-        # Normalize: lowercase and replace hyphens/underscores for comparison
-        def normalize_key(k):
-            return k.lower().replace('-', '_').replace(' ', '_')
-        
-        created_ids_normalized = {normalize_key(k): v for k, v in created_ids.items()}
-        
         for key, value in values.items():
             if isinstance(value, str) and value.upper().startswith("__NEW_"):
-                # Try exact match first
-                if value in created_ids:
-                    actual_id = created_ids[value]
-                    if verbose:
-                        print(f"  → Substituting {value} → {actual_id}")
-                    result[key] = actual_id
-                # Try normalized match (handles PRODUCT-11 vs PRODUCT_11)
-                elif normalize_key(value) in created_ids_normalized:
-                    actual_id = created_ids_normalized[normalize_key(value)]
-                    if verbose:
-                        print(f"  → Substituting {value} → {actual_id}")
-                    result[key] = actual_id
-                else:
-                    # Try SKU-based lookup with both patterns
-                    # Pattern 1: __NEW_product_sku_XXX
-                    # Pattern 2: __NEW_product_id_XXX (LLM often uses this)
-                    sku_match = re.match(r"__NEW_product_(?:sku|id)_(.+)", value, re.IGNORECASE)
-                    if sku_match:
-                        sku = sku_match.group(1)
-                        # Try multiple key formats
-                        possible_keys = [
-                            f"__NEW_product_sku_{sku}",
-                            f"__NEW_product_id_{sku}",
-                            f"__new_product_sku_{sku.lower()}",
-                            f"__new_product_id_{sku.lower()}",
-                        ]
-                        found = False
-                        for try_key in possible_keys:
-                            normalized_try = normalize_key(try_key)
-                            if normalized_try in created_ids_normalized:
-                                actual_id = created_ids_normalized[normalized_try]
-                                if verbose:
-                                    print(f"  → Substituting (by SKU) {value} → {actual_id}")
-                                result[key] = actual_id
-                                found = True
-                                break
-                        if not found:
-                            result[key] = value  # Keep placeholder, will cause FK error
-                    else:
-                        result[key] = value  # Keep placeholder
+                actual_id = self._resolve_placeholder(value, created_ids, verbose)
+                result[key] = actual_id
             else:
                 result[key] = value
         
         return result
+    
+    def _resolve_placeholder(self, placeholder: str, created_ids: dict, verbose: bool):
+        """
+        Resolve a placeholder to an actual ID using canonical lookup.
+        
+        Extracts table type and identifier from ANY placeholder format,
+        then looks up using canonical "table:identifier" key.
+        
+        BULLETPROOF: Normalizes hyphens/underscores/spaces to match any format.
+        """
+        # Clean up: strip trailing underscores, lowercase
+        clean = placeholder.rstrip('_').lower()
+        
+        def normalize_identifier(s):
+            """Normalize identifier: lowercase, convert underscores to hyphens."""
+            return s.lower().strip().replace('_', '-')
+        
+        def try_lookup(table: str, identifier: str) -> int | None:
+            """Try to find identifier in created_ids with various normalizations."""
+            # Normalize the identifier
+            norm_id = normalize_identifier(identifier)
+            
+            # Try multiple variations
+            variations = [
+                f"{table}:{identifier}",           # Original
+                f"{table}:{norm_id}",              # Normalized (underscores → hyphens)
+                f"{table}:{identifier.replace('-', '_')}",  # Hyphens → underscores
+            ]
+            
+            for key in variations:
+                if key in created_ids:
+                    return created_ids[key]
+            
+            # Also try fuzzy match on all keys for this table
+            for stored_key, stored_id in created_ids.items():
+                if stored_key.startswith(f"{table}:"):
+                    stored_identifier = stored_key.split(":", 1)[1]
+                    if normalize_identifier(stored_identifier) == norm_id:
+                        return stored_id
+            
+            return None
+        
+        # Pattern to extract table and identifier from various formats:
+        # __new_product_id_SKU-7, __new_product_id_for_SKU-7, __new_product_sku_SKU-7
+        # __new_purchase_order_id_TR-45678, __new_purchase_order_id_for_TR-45678
+        # __new_supplier_id_for_Big_Supplier
+        
+        # Try product patterns
+        product_patterns = [
+            r"__new_product_(?:id|sku)_(?:for_)?(.+)",  # Standard patterns
+            r"__new_product_(?:id|sku)_(.+)",           # Without for_
+        ]
+        for pattern in product_patterns:
+            match = re.match(pattern, clean)
+            if match:
+                identifier = match.group(1).strip()
+                actual_id = try_lookup("product", identifier)
+                if actual_id is not None:
+                    if verbose:
+                        print(f"  → Substituting {placeholder} → {actual_id}")
+                    return actual_id
+        
+        # Try purchase_order patterns
+        po_patterns = [
+            r"__new_purchase_order_(?:id)_(?:for_)?(.+)",
+            r"__new_purchase_order_(?:id)_(.+)",
+            r"__new_po_(?:id)_(?:for_)?(.+)",  # Short form
+        ]
+        for pattern in po_patterns:
+            match = re.match(pattern, clean)
+            if match:
+                identifier = match.group(1).strip()
+                actual_id = try_lookup("purchase_order", identifier)
+                if actual_id is not None:
+                    if verbose:
+                        print(f"  → Substituting {placeholder} → {actual_id}")
+                    return actual_id
+        
+        # Try supplier patterns
+        supplier_patterns = [
+            r"__new_supplier_(?:id)_(?:for_)?(.+)",
+            r"__new_supplier_(?:id)_(.+)",
+        ]
+        for pattern in supplier_patterns:
+            match = re.match(pattern, clean)
+            if match:
+                identifier = match.group(1).strip().replace('_', ' ')  # Restore spaces
+                actual_id = try_lookup("supplier", identifier)
+                if actual_id is not None:
+                    if verbose:
+                        print(f"  → Substituting {placeholder} → {actual_id}")
+                    return actual_id
+        
+        # If no match found, return original placeholder (will cause FK error)
+        if verbose:
+            print(f"  ⚠️ Could not resolve placeholder: {placeholder}")
+            print(f"      Available keys: {list(created_ids.keys())}")
+        return placeholder

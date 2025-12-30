@@ -4,11 +4,6 @@ Chain Planner - Multi-step LLM architecture for reliable database operations.
 Instead of one big LLM call that juggles many concerns, this breaks planning
 into focused steps:
 
-1. Entity Resolution - Match input entities to database records (with tool-calling)
-2. Existence Analysis - Decide INSERT vs UPDATE for each record
-3. Relationship Check - Identify junction table inserts needed
-4. Operation Generation - Generate final SQL operations
-
 Each step validates the previous step's output before proceeding.
 """
 

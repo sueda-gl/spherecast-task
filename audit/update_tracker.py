@@ -187,9 +187,7 @@ class UpdateAuditTracker:
         update_ids = []
         
         for op in operations:
-            # Handle multiple formats:
-            # 1. From reasoning_trail: {"result": {...}, "tool": "create_record"}
-            # 2. From final JSON: {"action": "updated", "table": "...", "record_id": ..., "updates": {...}}
+
             
             operation_result = None
             

@@ -30,22 +30,18 @@ COPY extraction/ ./extraction/
 COPY reasoning/ ./reasoning/
 COPY audit/ ./audit/
 
-# Copy startup script and make executable
-COPY start.sh ./
-RUN chmod +x start.sh
-
 # Copy built frontend
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
 # Create necessary directories
 RUN mkdir -p uploads audit_storage database
 
-# Expose port (Railway uses PORT env var)
+# Expose port
 EXPOSE 8000
 
-# Health check - use fixed port since healthcheck runs inside container
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8000}/ || exit 1
+    CMD curl -f http://localhost:8000/ || exit 1
 
-# Start server - use shell form to enable variable expansion
-CMD /bin/sh /app/start.sh
+# Start server - Python handles PORT env var
+CMD ["python", "-c", "import os; port = int(os.environ.get('PORT', 8000)); import uvicorn; uvicorn.run('api:app', host='0.0.0.0', port=port)"]
