@@ -45,6 +45,13 @@ env/
 uploads/*
 !uploads/.gitkeep
 
+# Audit storage
+audit_storage/*
+!audit_storage/.gitkeep
+
+# Frontend build output
+frontend/dist/
+
 # Logs
 *.log
 
