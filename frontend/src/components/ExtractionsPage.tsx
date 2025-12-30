@@ -1,7 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { ChevronRight, CheckCircle, AlertCircle, Clock, FileText, Download, Code, Brain, Database } from 'lucide-react'
-import ReasoningTrail from './ReasoningTrail'
-import DatabaseUpdates from './DatabaseUpdates'
+import { ChevronRight, CheckCircle, AlertCircle, Clock, FileText, Code } from 'lucide-react'
 
 interface Extraction {
   id: number
@@ -22,90 +20,33 @@ interface Extraction {
   reviewed_at?: string
 }
 
-type TabType = 'json' | 'reasoning' | 'updates'
-
-function ExtractionTabs({ extraction }: { extraction: Extraction }) {
-  const [activeTab, setActiveTab] = useState<TabType>('reasoning')
-
-  const tabs = [
-    { id: 'reasoning' as TabType, label: 'LLM Reasoning', icon: Brain },
-    { id: 'updates' as TabType, label: 'DB Changes', icon: Database },
-    { id: 'json' as TabType, label: 'Raw JSON', icon: Code },
-  ]
-
-  // Extract reasoning trail and database updates from processing result
-  // Data is nested under processing_result.result due to API structure
-  const processingData = extraction.processing_result?.result || extraction.processing_result || {}
-  const reasoningTrail = processingData.reasoning_trail || []
-  const operations = processingData.operations || []
-  const summary = processingData.summary
-  const confidence = processingData.confidence
-  const databaseUpdates = extraction.database_updates || []
-
+function ExtractionPanel({ extraction }: { extraction: Extraction }) {
   return (
     <div className="bg-dark-surface border border-dark-border rounded-lg h-full flex flex-col">
-      {/* Tab Header */}
-      <div className="border-b border-dark-border">
-        <div className="flex">
-          {tabs.map((tab) => {
-            const Icon = tab.icon
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex-1 px-4 py-3 text-sm font-medium transition-colors border-b-2 ${
-                  activeTab === tab.id
-                    ? 'border-blue-500 text-white bg-dark-hover/50'
-                    : 'border-transparent text-gray-400 hover:text-white hover:bg-dark-hover/30'
-                }`}
-              >
-                <div className="flex items-center justify-center gap-2">
-                  <Icon size={16} />
-                  <span>{tab.label}</span>
-                </div>
-              </button>
-            )
-          })}
+      {/* Header */}
+      <div className="border-b border-dark-border p-4">
+        <div className="flex items-center gap-2">
+          <Code size={16} className="text-gray-400" />
+          <h3 className="font-semibold text-white">Extracted Data (JSON)</h3>
         </div>
       </div>
 
-      {/* Tab Content */}
+      {/* Content */}
       <div className="flex-1 overflow-auto p-4">
-        {activeTab === 'reasoning' && (
-          <ReasoningTrail
-            reasoning={reasoningTrail}
-            operations={operations}
-            summary={summary}
-            confidence={confidence}
-          />
-        )}
-
-        {activeTab === 'updates' && (
-          <DatabaseUpdates
-            updates={databaseUpdates}
-            documentPath={extraction.document_path}
-          />
-        )}
-
-        {activeTab === 'json' && (
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-white">Extracted Data (JSON)</h3>
-              <button
-                onClick={() => {
-                  const json = JSON.stringify(extraction.extraction_result, null, 2)
-                  navigator.clipboard.writeText(json)
-                }}
-                className="text-xs px-3 py-1.5 bg-dark-bg hover:bg-dark-hover border border-dark-border rounded text-gray-300 transition-colors"
-              >
-                Copy JSON
-              </button>
-            </div>
-            <pre className="text-xs text-gray-300 font-mono bg-dark-bg p-4 rounded border border-dark-border overflow-x-auto">
-              {JSON.stringify(extraction.extraction_result, null, 2)}
-            </pre>
-          </div>
-        )}
+        <div className="flex items-center justify-end mb-4">
+          <button
+            onClick={() => {
+              const json = JSON.stringify(extraction.extraction_result, null, 2)
+              navigator.clipboard.writeText(json)
+            }}
+            className="text-xs px-3 py-1.5 bg-dark-bg hover:bg-dark-hover border border-dark-border rounded text-gray-300 transition-colors"
+          >
+            Copy JSON
+          </button>
+        </div>
+        <pre className="text-xs text-gray-300 font-mono bg-dark-bg p-4 rounded border border-dark-border overflow-x-auto">
+          {JSON.stringify(extraction.extraction_result, null, 2)}
+        </pre>
       </div>
     </div>
   )
@@ -341,23 +282,80 @@ export default function ExtractionsPage() {
                       {/* Issues */}
                       {selectedExtraction.verification_report.issues?.length > 0 && (
                         <div>
-                          <div className="text-xs text-gray-400 mb-2">Issues Found</div>
-                          <div className="space-y-2">
+                          <div className="text-xs text-gray-400 mb-2">
+                            ⚠️ Issues Found ({selectedExtraction.verification_report.issues.length})
+                          </div>
+                          <div className="space-y-3">
                             {selectedExtraction.verification_report.issues.map((issue: any, idx: number) => (
                               <div
                                 key={idx}
-                                className={`p-3 rounded border text-sm ${
+                                className={`p-4 rounded-lg border ${
                                   issue.severity === 'high'
-                                    ? 'bg-red-500/10 border-red-500/20 text-red-300'
+                                    ? 'bg-red-500/10 border-red-500/30'
                                     : issue.severity === 'medium'
-                                    ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-300'
-                                    : 'bg-blue-500/10 border-blue-500/20 text-blue-300'
+                                    ? 'bg-yellow-500/10 border-yellow-500/30'
+                                    : 'bg-blue-500/10 border-blue-500/30'
                                 }`}
                               >
-                                <div className="font-medium mb-1">
-                                  [{issue.severity?.toUpperCase()}] {issue.field}
+                                {/* Header */}
+                                <div className="flex items-center gap-2 mb-3">
+                                  <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                                    issue.severity === 'high'
+                                      ? 'bg-red-500/30 text-red-300'
+                                      : issue.severity === 'medium'
+                                      ? 'bg-yellow-500/30 text-yellow-300'
+                                      : 'bg-blue-500/30 text-blue-300'
+                                  }`}>
+                                    {issue.severity?.toUpperCase()}
+                                  </span>
+                                  <span className="text-white font-medium text-sm">{issue.field}</span>
                                 </div>
-                                <div className="text-xs opacity-80">{issue.description}</div>
+
+                                {/* Value Comparison */}
+                                {(issue.document_value || issue.extracted_value) && (
+                                  <div className="grid grid-cols-2 gap-3 mb-3">
+                                    <div className="bg-dark-bg/50 rounded p-2.5 border border-green-500/20">
+                                      <div className="text-xs text-green-400 mb-1 font-medium">📄 Document Shows:</div>
+                                      <div className="font-mono text-sm text-green-300 break-all">
+                                        {issue.document_value || '(not specified)'}
+                                      </div>
+                                    </div>
+                                    <div className="bg-dark-bg/50 rounded p-2.5 border border-red-500/20">
+                                      <div className="text-xs text-red-400 mb-1 font-medium">❌ JSON Has:</div>
+                                      <div className="font-mono text-sm text-red-300 break-all">
+                                        {issue.extracted_value || '(not specified)'}
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Specific Difference */}
+                                {issue.specific_difference && (
+                                  <div className="bg-dark-bg/50 rounded p-2.5 mb-2 border border-dark-border">
+                                    <div className="text-xs text-gray-400 mb-1">🔍 What's Wrong:</div>
+                                    <div className="text-sm text-gray-200">{issue.specific_difference}</div>
+                                  </div>
+                                )}
+
+                                {/* Business Impact */}
+                                {issue.business_impact && (
+                                  <div className="bg-orange-500/10 rounded p-2.5 mb-2 border border-orange-500/20">
+                                    <div className="text-xs text-orange-400 mb-1">⚡ Business Impact:</div>
+                                    <div className="text-sm text-orange-200">{issue.business_impact}</div>
+                                  </div>
+                                )}
+
+                                {/* Location in Document */}
+                                {issue.location_in_document && (
+                                  <div className="text-xs text-gray-500">
+                                    📍 Location: {issue.location_in_document}
+                                  </div>
+                                )}
+
+                                {/* Legacy description fallback */}
+                                {!issue.specific_difference && issue.description && (
+                                  <div className="text-sm text-gray-300">{issue.description}</div>
+                                )}
                               </div>
                             ))}
                           </div>
@@ -444,10 +442,10 @@ export default function ExtractionsPage() {
             )}
           </div>
 
-          {/* Right: Tabs for different views */}
+          {/* Right: JSON Panel */}
           <div>
             {selectedExtraction ? (
-              <ExtractionTabs extraction={selectedExtraction} />
+              <ExtractionPanel extraction={selectedExtraction} />
             ) : (
               <div className="bg-dark-surface border border-dark-border rounded-lg p-12 text-center h-full flex items-center justify-center">
                 <div>

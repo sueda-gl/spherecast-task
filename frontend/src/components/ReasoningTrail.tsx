@@ -4,8 +4,10 @@ import { useState } from 'react'
 interface ToolCall {
   iteration: number
   tool: string
+  type?: string
   arguments: Record<string, any>
   result: any
+  content?: any
 }
 
 interface ReasoningTrailProps {

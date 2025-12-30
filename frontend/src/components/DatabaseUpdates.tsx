@@ -1,4 +1,4 @@
-import { Database, Edit3, PlusCircle, Eye } from 'lucide-react'
+import { Database, Edit3, PlusCircle, Eye, Brain, AlertTriangle } from 'lucide-react'
 import { useState } from 'react'
 
 interface DatabaseUpdate {
@@ -105,20 +105,45 @@ function UpdateDetailsModal({ update, onClose, documentPath }: UpdateDetailsModa
           <div className="bg-dark-bg border border-dark-border rounded-lg p-4">
             <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
               <Brain size={16} className="text-purple-400" />
-              LLM Reasoning
+              LLM Reasoning (Audit Trail)
             </h3>
-            <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">
-              {update.llm_reasoning}
-            </p>
-            <div className="mt-3 flex items-center gap-2">
-              <div className="text-xs text-gray-400">Confidence:</div>
-              <div className={`text-xs font-medium ${
-                update.confidence > 0.9 ? 'text-green-400' :
-                update.confidence > 0.75 ? 'text-yellow-400' :
-                'text-red-400'
-              }`}>
-                {(update.confidence * 100).toFixed(0)}%
+            
+            {/* Parse and format the reasoning */}
+            <div className="space-y-3">
+              {update.llm_reasoning?.split('\n\n').map((section, idx) => (
+                <div key={idx} className="bg-dark-surface/50 rounded p-3 border border-dark-border/50">
+                  {section.includes('Step ') ? (
+                    <div className="text-xs">
+                      <span className="text-purple-400 font-medium">{section.split(':')[0]}:</span>
+                      <span className="text-gray-300">{section.split(':').slice(1).join(':')}</span>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">
+                      {section}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Confidence indicator */}
+            <div className="mt-4 pt-3 border-t border-dark-border flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="text-xs text-gray-400">LLM Confidence:</div>
+                <div className={`text-sm font-bold ${
+                  update.confidence > 0.9 ? 'text-green-400' :
+                  update.confidence > 0.75 ? 'text-yellow-400' :
+                  'text-red-400'
+                }`}>
+                  {(update.confidence * 100).toFixed(0)}%
+                </div>
               </div>
+              {update.confidence < 0.9 && (
+                <div className="flex items-center gap-1 text-xs text-yellow-400">
+                  <AlertTriangle size={12} />
+                  <span>May need review</span>
+                </div>
+              )}
             </div>
           </div>
 

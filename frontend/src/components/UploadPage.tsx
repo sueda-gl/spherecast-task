@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, Mail, CheckCircle, AlertCircle, Loader2, FileText, Eye } from 'lucide-react'
+import { Upload, Mail, CheckCircle, AlertCircle, Loader2, FileText } from 'lucide-react'
 
 interface UploadStatus {
   type: 'idle' | 'uploading' | 'success' | 'error'
