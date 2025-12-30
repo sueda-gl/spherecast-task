@@ -3,7 +3,7 @@
 from datetime import date
 from pathlib import Path
 
-from models import (
+from .models import (
     Base, Product, Supplier, SupplierProduct, 
     PurchaseOrder, PurchaseOrderLine,
     get_engine, create_tables, get_session
@@ -28,7 +28,7 @@ def seed_data(session):
         Supplier(id=2, name="Small Supplier", email="small@supplier.com"),
     ]
     session.add_all(suppliers)
-    session.commit()
+
     
     supplier_products = [
         SupplierProduct(supplier_id=1, product_id=1, supplier_sku=None, price_per_unit=1),
@@ -45,7 +45,7 @@ def seed_data(session):
         PurchaseOrder(id=3, reference_num="PO-35", supplier_id=2, delivery_date=date(2026, 1, 15)),
     ]
     session.add_all(purchase_orders)
-    session.commit()
+
     
     po_lines = [
         PurchaseOrderLine(id=1, purchase_order_id=1, product_id=1, quantity=10000, delivery_date=date(2026, 1, 15)),
