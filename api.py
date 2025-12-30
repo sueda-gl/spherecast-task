@@ -63,16 +63,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize orchestrator and update tracker
-orchestrator = UniversalOrchestrator(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    audit_db="database/audit.db",
-    model="gpt-5.2",
-    database_path="database/spherecast.db"
-)
+# Lazy initialization for orchestrator and update tracker
+# This prevents crashes on startup if OPENAI_API_KEY is not set
+_orchestrator = None
+_update_tracker = None
 
-# Initialize update tracker for API queries
-update_tracker = UpdateAuditTracker(db_path="database/audit.db")
+def get_orchestrator():
+    global _orchestrator
+    if _orchestrator is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY environment variable is not set")
+        _orchestrator = UniversalOrchestrator(
+            api_key=api_key,
+            audit_db="database/audit.db",
+            model="gpt-4o",
+            database_path="database/spherecast.db"
+        )
+    return _orchestrator
+
+def get_update_tracker():
+    global _update_tracker
+    if _update_tracker is None:
+        _update_tracker = UpdateAuditTracker(db_path="database/audit.db")
+    return _update_tracker
 
 # Upload directory
 UPLOAD_DIR = Path("uploads")
@@ -92,10 +106,10 @@ def process_in_background(extraction_id: int, email_body: str, extracted_data: d
     """
     try:
         # Update status to "processing"
-        orchestrator.audit.update_processing_status(extraction_id, "processing")
+        get_orchestrator().audit.update_processing_status(extraction_id, "processing")
         
         # Run Master LLM reasoning
-        result = orchestrator._process_automatically(
+        result = get_orchestrator()._process_automatically(
             email_body=email_body,
             extracted_data=extracted_data,
             extraction_id=extraction_id,
@@ -104,18 +118,18 @@ def process_in_background(extraction_id: int, email_body: str, extracted_data: d
         )
         
         # Update with result
-        orchestrator.audit.update_processing_result(extraction_id, {
+        get_orchestrator().audit.update_processing_result(extraction_id, {
             "status": "auto_processed",
             "result": result
         })
-        orchestrator.audit.update_processing_status(extraction_id, "completed")
+        get_orchestrator().audit.update_processing_status(extraction_id, "completed")
         
         print(f"\n✓ Background processing completed for extraction #{extraction_id}")
         
     except Exception as e:
         print(f"\n✗ Background processing failed for extraction #{extraction_id}: {e}")
-        orchestrator.audit.update_processing_status(extraction_id, "failed")
-        orchestrator.audit.update_processing_result(extraction_id, {
+        get_orchestrator().audit.update_processing_status(extraction_id, "failed")
+        get_orchestrator().audit.update_processing_result(extraction_id, {
             "status": "failed",
             "error": str(e)
         })
@@ -184,13 +198,13 @@ async def process_email_file(
         # Extract and verify document (fast - returns immediately)
         full_email_body = f"From: {email_from}\nSubject: {email_subject}\n\n{email_body}"
         
-        extraction_result = orchestrator.extractor.extract_with_verification(
+        extraction_result = get_orchestrator().extractor.extract_with_verification(
             document_path=document_path,
             verbose=False
         )
         
         # Log to audit
-        extraction_id = orchestrator.audit.log_extraction(
+        extraction_id = get_orchestrator().audit.log_extraction(
             email_id=email_id,
             document_path=document_path,
             extraction_result=extraction_result
@@ -201,7 +215,7 @@ async def process_email_file(
         
         # Determine if should auto-process
         should_auto_process = (
-            confidence >= orchestrator.AUTO_PROCESS_THRESHOLD and verified
+            confidence >= get_orchestrator().AUTO_PROCESS_THRESHOLD and verified
         )
         
         # Return immediately with extraction results
@@ -269,7 +283,7 @@ async def process_document(
             shutil.copyfileobj(document.file, buffer)
         
         # Process document
-        result = orchestrator.process_email_with_document(
+        result = get_orchestrator().process_email_with_document(
             email_id=email_id,
             email_body=email_body,
             document_path=str(file_path),
@@ -298,7 +312,7 @@ async def get_all_extractions(limit: int = 100):
     """
     
     try:
-        extractions = orchestrator.audit.get_all_extractions(limit=limit)
+        extractions = get_orchestrator().audit.get_all_extractions(limit=limit)
         return {
             "success": True,
             "count": len(extractions),
@@ -327,12 +341,12 @@ async def get_extraction(extraction_id: int):
     """
     
     try:
-        extraction = orchestrator.audit.get_extraction(extraction_id)
+        extraction = get_orchestrator().audit.get_extraction(extraction_id)
         if not extraction:
             raise HTTPException(status_code=404, detail="Extraction not found")
         
         # Get database updates for this extraction
-        updates = update_tracker.get_updates_for_extraction(extraction_id)
+        updates = get_update_tracker().get_updates_for_extraction(extraction_id)
         
         # Add database updates to response
         extraction['database_updates'] = [
@@ -375,7 +389,7 @@ async def get_review_queue(priority: Optional[str] = None):
     """
     
     try:
-        queue = orchestrator.get_review_queue(priority=priority)
+        queue = get_orchestrator().get_review_queue(priority=priority)
         return {
             "success": True,
             "count": len(queue),
@@ -398,7 +412,7 @@ async def get_statistics(days: int = 7):
     """
     
     try:
-        stats = orchestrator.get_statistics(days=days)
+        stats = get_orchestrator().get_statistics(days=days)
         return {
             "success": True,
             "statistics": stats
@@ -444,7 +458,7 @@ async def get_document(extraction_id: int):
     from fastapi.responses import FileResponse
     
     try:
-        extraction = orchestrator.audit.get_extraction(extraction_id)
+        extraction = get_orchestrator().audit.get_extraction(extraction_id)
         if not extraction:
             raise HTTPException(status_code=404, detail="Extraction not found")
         
@@ -774,7 +788,7 @@ async def get_updates_for_extraction(extraction_id: int):
         List of database updates with details
     """
     try:
-        updates = update_tracker.get_updates_for_extraction(extraction_id)
+        updates = get_update_tracker().get_updates_for_extraction(extraction_id)
         
         return {
             "success": True,
@@ -821,7 +835,7 @@ async def get_update_details(update_id: int):
         Complete update details
     """
     try:
-        update = update_tracker.get_update_details(update_id)
+        update = get_update_tracker().get_update_details(update_id)
         
         if not update:
             raise HTTPException(status_code=404, detail="Update not found")
@@ -865,7 +879,7 @@ async def get_pending_approvals():
         List of updates needing human review
     """
     try:
-        updates = update_tracker.get_pending_approvals()
+        updates = get_update_tracker().get_pending_approvals()
         
         return {
             "success": True,
@@ -904,7 +918,7 @@ async def approve_update(update_id: int, approver: str = Form(...), notes: str =
         Success confirmation
     """
     try:
-        update_tracker.approve_update(update_id, approver, notes)
+        get_update_tracker().approve_update(update_id, approver, notes)
         
         return {
             "success": True,
@@ -929,7 +943,7 @@ async def reject_update(update_id: int, reviewer: str = Form(...), reason: str =
         Success confirmation
     """
     try:
-        update_tracker.reject_update(update_id, reviewer, reason)
+        get_update_tracker().reject_update(update_id, reviewer, reason)
         
         return {
             "success": True,
@@ -962,7 +976,7 @@ async def get_table_changes(table_name: str, limit: int = 100):
         from sqlalchemy.orm import Session as SQLSession
         from audit.update_tracker import DatabaseUpdate, Base
         
-        session = SQLSession(update_tracker.engine)
+        session = SQLSession(get_update_tracker().engine)
         
         try:
             # Get all updates for this table
@@ -1024,7 +1038,7 @@ async def get_record_changes(table_name: str, record_id: str):
         from sqlalchemy.orm import Session as SQLSession
         from audit.update_tracker import DatabaseUpdate
         
-        session = SQLSession(update_tracker.engine)
+        session = SQLSession(get_update_tracker().engine)
         
         try:
             updates = session.query(DatabaseUpdate).filter(
@@ -1037,7 +1051,7 @@ async def get_record_changes(table_name: str, record_id: str):
                 # Get extraction details if available
                 extraction_data = None
                 if u.extraction_id:
-                    extraction = orchestrator.audit.get_extraction(u.extraction_id)
+                    extraction = get_orchestrator().audit.get_extraction(u.extraction_id)
                     if extraction:
                         extraction_data = {
                             "id": extraction.get("id"),

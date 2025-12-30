@@ -30,6 +30,10 @@ COPY extraction/ ./extraction/
 COPY reasoning/ ./reasoning/
 COPY audit/ ./audit/
 
+# Copy startup script
+COPY start.sh ./
+RUN chmod +x start.sh
+
 # Copy built frontend
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
@@ -40,8 +44,8 @@ RUN mkdir -p uploads audit_storage
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:${PORT:-8000}/ || exit 1
 
-# Start server - Railway provides PORT env variable
-CMD uvicorn api:app --host 0.0.0.0 --port ${PORT:-8000}
+# Start server using shell script
+CMD ["./start.sh"]
