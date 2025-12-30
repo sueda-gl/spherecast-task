@@ -93,8 +93,8 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 
-@app.get("/")
-async def root():
+@app.get("/api/health")
+async def health_check():
     """API health check."""
     return {"status": "ok", "service": "SphereCast API", "version": "0.1.0"}
 
@@ -1163,6 +1163,15 @@ if FRONTEND_DIST.exists():
     # Serve static assets (JS, CSS, images)
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
     
+    # Serve index.html at root
+    @app.get("/")
+    async def serve_root():
+        """Serve the React SPA at root."""
+        index_file = FRONTEND_DIST / "index.html"
+        if index_file.exists():
+            return FileResponse(str(index_file), media_type="text/html")
+        return {"status": "ok", "service": "SphereCast API", "version": "0.1.0"}
+    
     # Serve index.html for all non-API routes (SPA fallback)
     @app.get("/{full_path:path}")
     async def serve_spa(request: Request, full_path: str):
@@ -1176,6 +1185,12 @@ if FRONTEND_DIST.exists():
         if index_file.exists():
             return FileResponse(str(index_file), media_type="text/html")
         raise HTTPException(status_code=404, detail="Frontend not built")
+else:
+    # Fallback if frontend not built - show API health check
+    @app.get("/")
+    async def root_fallback():
+        """API health check when frontend not available."""
+        return {"status": "ok", "service": "SphereCast API", "version": "0.1.0", "note": "Frontend not built"}
 
 
 if __name__ == "__main__":
