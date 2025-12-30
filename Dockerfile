@@ -30,7 +30,7 @@ COPY extraction/ ./extraction/
 COPY reasoning/ ./reasoning/
 COPY audit/ ./audit/
 
-# Copy startup script
+# Copy startup script and make executable
 COPY start.sh ./
 RUN chmod +x start.sh
 
@@ -38,14 +38,14 @@ RUN chmod +x start.sh
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
 # Create necessary directories
-RUN mkdir -p uploads audit_storage
+RUN mkdir -p uploads audit_storage database
 
 # Expose port (Railway uses PORT env var)
 EXPOSE 8000
 
-# Health check
+# Health check - use fixed port since healthcheck runs inside container
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:${PORT:-8000}/ || exit 1
 
-# Start server using shell script
-CMD ["./start.sh"]
+# Start server - use shell form to enable variable expansion
+CMD /bin/sh /app/start.sh
