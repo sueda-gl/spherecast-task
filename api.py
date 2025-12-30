@@ -99,6 +99,58 @@ async def health_check():
     return {"status": "ok", "service": "SphereCast API", "version": "0.1.0"}
 
 
+@app.post("/api/init-database")
+async def init_database(secret: str = ""):
+    """
+    Initialize the database with tables and seed data.
+    Call this once after first deployment.
+    
+    To prevent accidental resets, requires secret=INIT_DB
+    """
+    if secret != "INIT_DB":
+        raise HTTPException(status_code=403, detail="Invalid secret. Use ?secret=INIT_DB")
+    
+    try:
+        from database.models import Base, get_engine, get_session, Product, Supplier
+        from database.setup import seed_data
+        from pathlib import Path
+        
+        db_path = Path("database/spherecast.db")
+        
+        # Check if database already has data
+        engine = get_engine(str(db_path))
+        session = get_session(engine)
+        
+        existing_products = session.query(Product).count()
+        if existing_products > 0:
+            session.close()
+            return {
+                "success": False,
+                "message": f"Database already has {existing_products} products. Not reinitializing.",
+                "hint": "Delete the database file manually if you want to reset."
+            }
+        
+        # Create tables
+        Base.metadata.create_all(engine)
+        
+        # Seed data
+        seed_data(session)
+        session.close()
+        
+        # Also initialize audit database
+        from audit.update_tracker import Base as AuditBase
+        audit_engine = get_engine("database/audit.db")
+        AuditBase.metadata.create_all(audit_engine)
+        
+        return {
+            "success": True,
+            "message": "Database initialized with tables and seed data!",
+            "tables_created": ["product", "supplier", "supplier_product", "purchase_order", "purchase_order_line"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to initialize database: {str(e)}")
+
+
 def process_in_background(extraction_id: int, email_body: str, extracted_data: dict, document_path: str):
     """
     Background task: Process with Master LLM.
