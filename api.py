@@ -99,6 +99,57 @@ async def health_check():
     return {"status": "ok", "service": "SphereCast API", "version": "0.1.0"}
 
 
+@app.get("/api/debug-db")
+async def debug_database():
+    """Debug endpoint to check database status."""
+    from pathlib import Path
+    from sqlalchemy import inspect
+    
+    db_path = Path("database/spherecast.db")
+    audit_path = Path("database/audit.db")
+    
+    result = {
+        "database_dir_exists": Path("database").exists(),
+        "database_dir_contents": [],
+        "spherecast_db": {
+            "exists": db_path.exists(),
+            "size_bytes": db_path.stat().st_size if db_path.exists() else 0,
+            "tables": []
+        },
+        "audit_db": {
+            "exists": audit_path.exists(),
+            "size_bytes": audit_path.stat().st_size if audit_path.exists() else 0,
+            "tables": []
+        }
+    }
+    
+    # List directory contents
+    if Path("database").exists():
+        result["database_dir_contents"] = [f.name for f in Path("database").iterdir()]
+    
+    # Check spherecast.db tables
+    if db_path.exists():
+        try:
+            from database.models import get_engine
+            engine = get_engine(str(db_path))
+            inspector = inspect(engine)
+            result["spherecast_db"]["tables"] = inspector.get_table_names()
+        except Exception as e:
+            result["spherecast_db"]["error"] = str(e)
+    
+    # Check audit.db tables
+    if audit_path.exists():
+        try:
+            from database.models import get_engine
+            engine = get_engine(str(audit_path))
+            inspector = inspect(engine)
+            result["audit_db"]["tables"] = inspector.get_table_names()
+        except Exception as e:
+            result["audit_db"]["error"] = str(e)
+    
+    return result
+
+
 @app.post("/api/init-database")
 async def init_database(secret: str = ""):
     """
