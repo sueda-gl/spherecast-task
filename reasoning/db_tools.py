@@ -8,7 +8,7 @@ rather than relying on pre-digested snapshots. The LLM can:
 - Query data to discover patterns
 - Search for specific values
 
-This enables true reasoning about the database, not string matching.
+This enables true reasoning about the database
 """
 
 import json
@@ -19,7 +19,7 @@ from sqlalchemy.engine import Engine
 
 class DatabaseTools:
     """
-    Tools for LLM to explore and understand the database.
+  
     
     Each method is a tool the LLM can call via function calling.
     """
@@ -155,6 +155,35 @@ class DatabaseTools:
                             }
                         },
                         "required": ["table_name"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "resolve_sku",
+                    "description": """CRITICAL: Use this tool to resolve a SKU from a document to an internal product ID.
+                    
+This tool automatically checks:
+1. EXACT match in product.sku
+2. NORMALIZED match (removes hyphens, case-insensitive)
+3. SUPPLIER MAPPING in supplier_product.supplier_sku (vendor SKU → internal product)
+
+ALWAYS use this tool when you see a SKU in a document. Vendor SKUs (like 'SKU13', 'PROD-001') 
+often differ from internal SKUs (like 'SKU-1-3', 'SKU-1') and this tool handles the mapping.""",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "sku": {
+                                "type": "string",
+                                "description": "The SKU to resolve (from the document)"
+                            },
+                            "supplier_id": {
+                                "type": "integer",
+                                "description": "Optional: supplier ID to check supplier-specific SKU mappings"
+                            }
+                        },
+                        "required": ["sku"]
                     }
                 }
             }
@@ -395,6 +424,102 @@ class DatabaseTools:
         except Exception as e:
             return {"error": str(e)}
     
+    def resolve_sku(self, sku: str, supplier_id: int = None) -> Dict[str, Any]:
+        """
+        Resolve a SKU from a document to an internal product ID.
+        
+        Checks in order:
+        1. EXACT match in product.sku
+        2. NORMALIZED match (removes hyphens, case-insensitive)
+        3. SUPPLIER MAPPING in supplier_product.supplier_sku
+        
+        Returns the product_id and match method if found.
+        """
+        
+        def normalize_sku(s: str) -> str:
+            """Normalize SKU: lowercase, remove hyphens/spaces."""
+            return s.lower().replace('-', '').replace(' ', '').replace('_', '')
+        
+        input_normalized = normalize_sku(sku)
+        
+        try:
+            with self.engine.connect() as conn:
+                # Step 1: EXACT match in product.sku
+                result = conn.execute(
+                    text("SELECT id, sku, title FROM product WHERE sku = :sku"),
+                    {"sku": sku}
+                )
+                row = result.fetchone()
+                if row:
+                    return {
+                        "found": True,
+                        "product_id": row[0],
+                        "internal_sku": row[1],
+                        "title": row[2],
+                        "match_method": "exact",
+                        "confidence": "HIGH",
+                        "input_sku": sku
+                    }
+                
+                # Step 2: NORMALIZED match in product.sku
+                result = conn.execute(text("SELECT id, sku, title FROM product"))
+                for row in result:
+                    if normalize_sku(row[1]) == input_normalized:
+                        return {
+                            "found": True,
+                            "product_id": row[0],
+                            "internal_sku": row[1],
+                            "title": row[2],
+                            "match_method": "normalized",
+                            "confidence": "HIGH",
+                            "input_sku": sku,
+                            "note": f"Input '{sku}' normalized to match '{row[1]}'"
+                        }
+                
+                # Step 3: Check supplier_product.supplier_sku (vendor SKU mapping)
+                query = """
+                    SELECT sp.product_id, sp.supplier_sku, p.sku as internal_sku, p.title, sp.supplier_id
+                    FROM supplier_product sp
+                    JOIN product p ON sp.product_id = p.id
+                    WHERE sp.supplier_sku IS NOT NULL
+                """
+                if supplier_id:
+                    query += " AND sp.supplier_id = :supplier_id"
+                    result = conn.execute(text(query), {"supplier_id": supplier_id})
+                else:
+                    result = conn.execute(text(query))
+                
+                for row in result:
+                    supplier_sku = row[1]
+                    # Check exact and normalized matches against supplier_sku
+                    if supplier_sku == sku or normalize_sku(supplier_sku) == input_normalized:
+                        return {
+                            "found": True,
+                            "product_id": row[0],
+                            "internal_sku": row[2],
+                            "supplier_sku": supplier_sku,
+                            "title": row[3],
+                            "match_method": "supplier_mapping",
+                            "supplier_id": row[4],
+                            "confidence": "HIGH",
+                            "input_sku": sku,
+                            "note": f"Vendor SKU '{sku}' maps to internal SKU '{row[2]}' via supplier_product"
+                        }
+                
+                # Not found
+                return {
+                    "found": False,
+                    "product_id": None,
+                    "input_sku": sku,
+                    "match_method": "unresolved",
+                    "confidence": "LOW",
+                    "note": f"SKU '{sku}' not found in product table or supplier_product mappings. This is likely a NEW product.",
+                    "suggestion": "Mark this as a new product that needs to be INSERTed"
+                }
+                
+        except Exception as e:
+            return {"error": str(e), "input_sku": sku}
+    
     # =========================================================================
     # TOOL EXECUTOR
     # =========================================================================
@@ -409,6 +534,7 @@ class DatabaseTools:
             "query_table": self.query_table,
             "search_value": self.search_value,
             "get_sample_data": self.get_sample_data,
+            "resolve_sku": self.resolve_sku,
         }
         
         if tool_name not in tool_map:

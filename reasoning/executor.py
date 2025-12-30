@@ -1,11 +1,7 @@
 """
 Generic Operation Executor - Executes INSERT/UPDATE operations from LLM plan.
 
-This executor:
-- Handles standard SQL operations (INSERT, UPDATE)
-- Tracks created IDs for FK substitution
-- Maintains transaction integrity
-- Works for any table structure
+
 """
 
 from typing import Dict, Any, List
@@ -15,23 +11,10 @@ import re
 
 
 class OperationExecutor:
-    """
-    Executes generic SQL operations from LLM plan.
-    
-    Key features:
-    - Handles "__NEW_<table>_id" placeholder substitution
-    - Transaction support (all-or-nothing)
-    - Detailed audit logging
-    """
+
     
     def __init__(self, engine, update_tracker=None):
-        """
-        Initialize executor.
-        
-        Args:
-            engine: SQLAlchemy engine
-            update_tracker: Optional UpdateAuditTracker for logging
-        """
+
         self.engine = engine
         self.update_tracker = update_tracker
         
@@ -50,18 +33,7 @@ class OperationExecutor:
         source_document_path: str = None,
         verbose: bool = True
     ) -> Dict[str, Any]:
-        """
-        Execute operation plan.
-        
-        Args:
-            plan: Operation plan from ChainPlanner
-            extraction_id: For audit logging
-            source_document_path: For audit logging
-            verbose: Print progress
-            
-        Returns:
-            Execution result with created/updated record IDs
-        """
+
         
         if verbose:
             print(f"\n{'='*70}")
@@ -530,6 +502,37 @@ class OperationExecutor:
                 if actual_id is not None:
                     if verbose:
                         print(f"  → Substituting {placeholder} → {actual_id}")
+                    return actual_id
+        
+        # =========================================================================
+        # FALLBACK: Simple placeholders without identifiers
+        # =========================================================================
+        # Handle cases like __NEW_supplier_id, __NEW_purchase_order_id
+        # These don't have a specific identifier, so we look for ANY recently created record
+        
+        def get_latest_for_table(table: str) -> int | None:
+            """Get the most recently created ID for a table type."""
+            matching_ids = []
+            for stored_key, stored_id in created_ids.items():
+                if stored_key.startswith(f"{table}:"):
+                    matching_ids.append(stored_id)
+            # Return the highest ID (most recently created)
+            return max(matching_ids) if matching_ids else None
+        
+        # Check for simple __new_<table>_id patterns (no identifier)
+        simple_patterns = [
+            (r"^__new_supplier_id$", "supplier"),
+            (r"^__new_purchase_order_id$", "purchase_order"),
+            (r"^__new_po_id$", "purchase_order"),
+            (r"^__new_product_id$", "product"),
+        ]
+        
+        for pattern, table in simple_patterns:
+            if re.match(pattern, clean):
+                actual_id = get_latest_for_table(table)
+                if actual_id is not None:
+                    if verbose:
+                        print(f"  → Substituting {placeholder} → {actual_id} (latest {table})")
                     return actual_id
         
         # If no match found, return original placeholder (will cause FK error)

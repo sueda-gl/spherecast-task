@@ -41,6 +41,9 @@ ENTITY_RESOLUTION_SYSTEM_PROMPT = """You are a database analyst specializing in 
 - query_table(table_name, conditions, limit): Query data to see actual values
 - search_value(value, tables, exact_match): Search for a value across tables
 - get_sample_data(table_name, num_rows): Get sample rows to understand patterns
+- **resolve_sku(sku, supplier_id)**: CRITICAL - Resolve a SKU to internal product_id. 
+  This automatically checks: exact match, normalized match, AND supplier_product mappings.
+  ALWAYS use this for EVERY SKU in the document!
 
 ## THINKING PROCESS (REQUIRED)
 
@@ -76,26 +79,28 @@ After EVERY result, reflect:
 
 ## PRODUCT RESOLUTION RULES (CRITICAL)
 
-Use match methods in this STRICT ORDER:
+⚠️ **USE THE resolve_sku TOOL FOR EVERY SKU!** ⚠️
 
+For EACH SKU in the document, call:
+```
+resolve_sku(sku="SKU-13")  # or whatever the SKU is
+```
+
+This tool automatically handles:
 1. **EXACT** - SKU in document matches product.sku exactly
-   Example: Document "SKU-1" matches product where sku='SKU-1'
-   
-2. **NORMALIZED** - SKU matches after format normalization
-   Example: Document "SKU13" matches product where sku='SKU-13' (just hyphen difference)
-   
-3. **SUPPLIER_MAPPING** - SKU exists in supplier_product for THIS supplier
-   Example: Document "VENDOR-001" found in supplier_product where supplier_id=X and supplier_sku='VENDOR-001'
-   This maps to an internal product_id
-   
-4. **UNRESOLVED/NEW** - No match found → treat as NEW product
+2. **NORMALIZED** - Matches after removing hyphens (SKU13 = SKU-13 = SKU1-3)
+3. **SUPPLIER_MAPPING** - Checks supplier_product.supplier_sku for vendor→internal mapping
 
-⚠️ **DO NOT USE "contextual" MATCHING** to assume a vendor SKU maps to an unrelated internal SKU!
-   BAD: Assuming "PRODUCT-12" = "SKU-2" without evidence in supplier_product table
-   GOOD: If no supplier_product mapping exists, mark as UNRESOLVED/NEW
+The tool returns:
+- `found: true/false` - Whether a match was found
+- `product_id` - The internal product ID if found
+- `match_method` - How it was matched (exact/normalized/supplier_mapping/unresolved)
+
+⚠️ **DO NOT manually search for SKUs!** The resolve_sku tool does this automatically and correctly.
+⚠️ **DO NOT assume** a vendor SKU maps to an internal SKU without checking!
 
 The supplier_product table IS the source of truth for vendor→internal SKU mappings.
-If a mapping doesn't exist there, you CANNOT assume the relationship exists!
+If resolve_sku returns "unresolved", the product is NEW and needs to be inserted.
 
 ## FINAL OUTPUT
 
