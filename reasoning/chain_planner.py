@@ -79,29 +79,6 @@ After EVERY result, reflect:
    - Document your reasoning for each resolution
    - Determine if entity exists or is new
 
-## PRODUCT RESOLUTION RULES (CRITICAL)
-
-Use match methods in this STRICT ORDER:
-
-1. **EXACT** - SKU in document matches product.sku exactly
-   Example: Document "SKU-1" matches product where sku='SKU-1'
-   
-2. **NORMALIZED** - SKU matches after format normalization
-   Example: Document "SKU13" matches product where sku='SKU-13' (just hyphen difference)
-   
-3. **SUPPLIER_MAPPING** - SKU exists in supplier_product for THIS supplier
-   Example: Document "VENDOR-001" found in supplier_product where supplier_id=X and supplier_sku='VENDOR-001'
-   This maps to an internal product_id
-   
-4. **UNRESOLVED/NEW** - No match found → treat as NEW product
-
-⚠️ **DO NOT USE "contextual" MATCHING** to assume a vendor SKU maps to an unrelated internal SKU!
-   BAD: Assuming "PRODUCT-12" = "SKU-2" without evidence in supplier_product table
-   GOOD: If no supplier_product mapping exists, mark as UNRESOLVED/NEW
-
-The supplier_product table IS the source of truth for vendor→internal SKU mappings.
-If a mapping doesn't exist there, you CANNOT assume the relationship exists!
-
 ## FINAL OUTPUT
 
 When you have resolved all entities, return a JSON object (no tool calls):
@@ -247,6 +224,14 @@ RELATIONSHIP_CHECK_PROMPT = """You are a database relationship analyst. Check wh
 
 {junction_tables}
 
+## CURRENT SUPPLIER_PRODUCT RECORDS
+
+{current_supplier_products}
+
+## PRODUCTS FROM DOCUMENT (with their SKUs)
+
+{products_from_document}
+
 ## ENTITIES BEING INSERTED (from previous step)
 
 {inserts_planned}
@@ -255,40 +240,27 @@ RELATIONSHIP_CHECK_PROMPT = """You are a database relationship analyst. Check wh
 
 Supplier ID: {supplier_id}
 
-## ALL PRODUCTS IN THIS DOCUMENT
-
-{all_products}
-
 ## YOUR TASK
 
-Check if any junction table records need to be created for this document.
+TWO things to check:
 
-CRITICAL RULES:
+### 1. NEW PRODUCTS - Need junction INSERT
+For each NEW product being inserted, create a supplier_product record to link it to the supplier.
 
-1. **SUPPLIER_PRODUCT MAPPINGS ARE ALWAYS NEEDED**
-   - When processing a document from a supplier, the supplier may use THEIR OWN SKUs
-   - The supplier_product table maps (supplier_id, product_id) with their supplier_sku
-   - For EVERY product in this document: check if a supplier_product mapping exists for THIS supplier
-   - If mapping doesn't exist → INSERT into supplier_product
-   - This applies whether the product is NEW or EXISTING
-   
-2. **The supplier_sku column stores the vendor's SKU**
-   - If document shows "PRODUCT-12" but internal sku is "SKU-2"
-   - supplier_product should store supplier_sku='PRODUCT-12' linking to product_id=2
-   - This enables future documents from this supplier to resolve correctly
+### 2. EXISTING PRODUCTS - May need junction UPDATE
+For each EXISTING product in the document, check if the supplier_product record exists:
+- If NO record exists for (supplier_id, product_id): need INSERT
+- If record EXISTS but supplier_sku is NULL or different: need UPDATE
 
-3. **Junction tables link entities**
-   - Without the junction record, the relationship doesn't exist
-   - A product can exist in the product table but have NO relationship to a supplier without supplier_product
+CRITICAL: The supplier_sku column should store the SKU as it appears in the supplier's document.
+This enables future documents from this supplier to be resolved correctly.
 
 ## HOW TO FILL VALUES
 
-For each junction table INSERT:
-1. Look at the table's COLUMNS in the schema
-2. For EACH column, determine the appropriate value:
-   - FK columns: use the ID or __NEW_<table>_id placeholder
-   - Data columns: extract from the input data (document, email, context)
-3. Do NOT leave columns empty if you have the data available
+For each operation:
+1. supplier_id: use the resolved supplier ID
+2. product_id: use the resolved product ID or __NEW_product_id_<SKU> placeholder
+3. supplier_sku: the SKU from the document (how the supplier refers to this product)
 
 ## OUTPUT FORMAT
 
@@ -300,8 +272,21 @@ Return ONLY valid JSON:
       "table": "<junction table name>",
       "reason": "<why this is needed>",
       "values": {{
-        "<column_name>": "<value based on schema and available data>"
+        "<column_name>": "<value>"
       }}
+    }}
+  ],
+  "junction_updates_needed": [
+    {{
+      "table": "supplier_product",
+      "where": {{
+        "supplier_id": <int>,
+        "product_id": <int>
+      }},
+      "set": {{
+        "supplier_sku": "<sku from document>"
+      }},
+      "reason": "<why update is needed>"
     }}
   ],
   "validation": {{
@@ -351,23 +336,14 @@ Rules:
    - supplier (if new) → FIRST
    - products → SECOND
    - purchase_order → THIRD (needs supplier_id)
-   - junction tables (supplier_product) → FOURTH
+   - junction tables (supplier_product) INSERTs and UPDATEs → FOURTH
    - purchase_order_lines → LAST (needs purchase_order_id and product_id)
 2. Use "__NEW_<table>_id" placeholders for FK references to newly created records
-3. **MUST include ALL junction table inserts from relationship check**
+3. Include ALL junction table operations from relationship check:
+   - junction_inserts_needed → convert to INSERT operations
+   - junction_updates_needed → convert to UPDATE operations (for supplier_sku updates)
 4. Apply any context instructions (e.g., "push back ETA to 2027")
 5. For UPDATEs, only set fields that have new values
-
-## CRITICAL: SUPPLIER_PRODUCT MAPPINGS
-
-For EVERY product used from a supplier's document:
-- The supplier_product table maps vendor SKUs to internal product IDs
-- If the relationship_check says supplier_product INSERT is needed, YOU MUST include it
-- Values needed:
-  - supplier_id: from entity resolution
-  - product_id: the internal product ID (resolved or __NEW_product_id)
-  - supplier_sku: the vendor's SKU from the document (NOT the internal SKU)
-  - price_per_unit: from document if available (can be null)
 
 ## CRITICAL: FILL ALL COLUMNS - WHERE TO GET DATA
 
@@ -435,7 +411,7 @@ class ChainPlanner:
     4. Operation Generation - Final SQL operations
     """
     
-    def __init__(self, engine, api_key: str = None, model: str = "gpt-5.2"):
+    def __init__(self, engine, api_key: str = None, model: str = "gpt-4o"):
         self.engine = engine
         self.schema_builder = RichSchemaBuilder(engine)
         self.llm = LLMClient(api_key=api_key, model=model, temperature=0.0)
@@ -665,14 +641,18 @@ class ChainPlanner:
         # Get supplier ID
         supplier_id = entity_resolution.get("supplier", {}).get("supplier_id")
         
-        # Get ALL products from this document (for supplier_product mapping check)
-        all_products = self._format_all_products(entity_resolution, existence_analysis)
+        # Get current supplier_product records for this supplier
+        current_supplier_products = self._get_supplier_products(schema["data_snapshot"], supplier_id)
+        
+        # Get products from document with their SKUs (for supplier_sku updates)
+        products_from_document = entity_resolution.get("products", {})
         
         prompt = RELATIONSHIP_CHECK_PROMPT.format(
             junction_tables=junction_tables,
+            current_supplier_products=json.dumps(current_supplier_products, indent=2),
+            products_from_document=json.dumps(products_from_document, indent=2),
             inserts_planned=json.dumps(inserts_planned, indent=2),
-            supplier_id=supplier_id,
-            all_products=all_products
+            supplier_id=supplier_id
         )
         
         try:
@@ -801,34 +781,22 @@ class ChainPlanner:
                 lines.append("")
         return "\n".join(lines) if lines else "No junction tables defined."
     
-    def _format_all_products(self, entity_resolution: dict, existence_analysis: dict) -> str:
-        """Format all products from this document for relationship checking.
+    def _get_supplier_products(self, data_snapshot: dict, supplier_id: int) -> list:
+        """Get current supplier_product records for a supplier."""
+        if not supplier_id:
+            return []
         
-        This ensures supplier_product mappings are created even for existing products
-        when a new supplier relationship is being established.
-        """
-        lines = []
-        products = entity_resolution.get("products", {})
-        
-        if not products:
-            return "No products in this document."
-        
-        for vendor_sku, info in products.items():
-            product_id = info.get("product_id")
-            internal_sku = info.get("internal_sku", "")
-            match_method = info.get("match_method", "unknown")
-            is_new = info.get("is_new", False)
-            
-            status = "NEW (to be created)" if is_new else f"EXISTS (id={product_id})"
-            lines.append(f"- Vendor SKU: '{vendor_sku}'")
-            lines.append(f"    Status: {status}")
-            lines.append(f"    Internal SKU: '{internal_sku}'")
-            lines.append(f"    Match Method: {match_method}")
-            if product_id:
-                lines.append(f"    Product ID: {product_id}")
-            lines.append("")
-        
-        return "\n".join(lines)
+        mappings = data_snapshot.get("supplier_product_mappings", [])
+        return [
+            {
+                "supplier_id": m["supplier_id"],
+                "product_id": m["product_id"],
+                "supplier_sku": m.get("supplier_sku"),
+                "internal_sku": m.get("internal_sku")
+            }
+            for m in mappings
+            if m["supplier_id"] == supplier_id
+        ]
     
     def _extract_inserts(self, existence_analysis: dict) -> dict:
         """Extract planned INSERTs from existence analysis."""
@@ -910,6 +878,12 @@ class ChainPlanner:
                 print(f"      → {ji.get('table')}: {ji.get('reason', '')[:50]}")
         else:
             print("    No junction INSERTs needed")
+        
+        junction_updates = result.get("junction_updates_needed", [])
+        if junction_updates:
+            print(f"    Junction UPDATEs needed: {len(junction_updates)}")
+            for ju in junction_updates:
+                print(f"      → {ju.get('table')}: {ju.get('reason', '')[:50]}")
         
         validation = result.get("validation", {})
         if validation.get("warnings"):

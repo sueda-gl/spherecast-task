@@ -426,27 +426,55 @@ class UniversalOrchestrator:
         """Build human-readable summary from plan and execution result."""
         parts = []
         
-        # PO info
-        analysis = plan.get("analysis", {})
-        po_ref = analysis.get("po_reference", {})
-        if po_ref.get("is_new"):
-            parts.append(f"Created new purchase order '{po_ref.get('raw_value')}'")
+        # Try to extract intent from PlanningLLM structure (reasoning.input_analysis)
+        reasoning = plan.get("reasoning", {})
+        input_analysis = reasoning.get("input_analysis", {})
+        intent = input_analysis.get("intent", "")
+        
+        # If we have an intent, use it as the primary summary
+        if intent:
+            parts.append(intent)
         else:
-            parts.append(f"Updated existing purchase order '{po_ref.get('matched_reference')}' (ID {po_ref.get('matched_po_id')})")
+            # Fallback: Try legacy structure (analysis.po_reference)
+            analysis = plan.get("analysis", {})
+            po_ref = analysis.get("po_reference", {})
+            if po_ref:
+                if po_ref.get("is_new"):
+                    parts.append(f"Created new purchase order '{po_ref.get('raw_value', 'unknown')}'")
+                elif po_ref.get("matched_reference") or po_ref.get("matched_po_id"):
+                    parts.append(f"Updated purchase order '{po_ref.get('matched_reference', '?')}' (ID {po_ref.get('matched_po_id', '?')})")
         
         # Operations
         created = len(exec_result.get("records_created", []))
         updated = len(exec_result.get("records_updated", []))
         
-        if created:
+        # Build tables list
+        tables_affected = list(set(
+            [r["table"] for r in exec_result.get("records_created", [])] +
+            [r["table"] for r in exec_result.get("records_updated", [])]
+        ))
+        
+        if created and updated:
+            parts.append(f"Created {created} and updated {updated} record(s)")
+        elif created:
             parts.append(f"Created {created} record(s)")
-        if updated:
+        elif updated:
             parts.append(f"Updated {updated} record(s)")
+        
+        if tables_affected:
+            parts.append(f"Tables: {', '.join(tables_affected)}")
         
         # Email overrides
         overrides = plan.get("email_overrides", [])
         if overrides:
             parts.append(f"Applied {len(overrides)} email override(s)")
+        
+        # If we still have no parts, provide a generic summary
+        if not parts:
+            operations = plan.get("operations", [])
+            inserts = sum(1 for op in operations if op.get("operation") == "INSERT")
+            updates = sum(1 for op in operations if op.get("operation") == "UPDATE")
+            parts.append(f"Planned {inserts} inserts and {updates} updates")
         
         return ". ".join(parts) + "."
     
@@ -454,26 +482,36 @@ class UniversalOrchestrator:
         """Build operations list for audit logging."""
         operations = []
         
-        # From created records - NOTE: use "created" not "create" to match update_tracker expectations
+        # Build a lookup of plan operations by (table, operation type) for reasons
+        plan_ops = plan.get("operations", [])
+        reason_lookup = {}
+        for pop in plan_ops:
+            key = (pop.get("table"), pop.get("operation", "").upper())
+            reason_lookup[key] = pop.get("reason", "")
+        
+        # From created records - use "created" to match update_tracker expectations
         for rec in exec_result.get("records_created", []):
+            table = rec.get("table")
+            reason = reason_lookup.get((table, "INSERT"), rec.get("reason", ""))
             operations.append({
                 "action": "created",
-                "table": rec.get("table"),
+                "table": table,
                 "record_id": rec.get("id"),
-                "data": rec.get("values", rec)
+                "data": rec.get("values", rec),
+                "reason": reason
             })
         
-        # From updated records - NOTE: use "updated" not "update" to match update_tracker expectations
+        # From updated records - use "updated" to match update_tracker expectations
         for rec in exec_result.get("records_updated", []):
-            # Only log if there were actual changes
-            changes = rec.get("changes", {})
-            if changes:
-                operations.append({
-                    "action": "updated",
-                    "table": rec.get("table"),
-                    "record_id": rec.get("id"),
-                    "changes": changes
-                })
+            table = rec.get("table")
+            reason = reason_lookup.get((table, "UPDATE"), rec.get("reason", ""))
+            operations.append({
+                "action": "updated",
+                "table": table,
+                "record_id": rec.get("id"),
+                "changes": rec.get("changes"),
+                "reason": reason
+            })
         
         return operations
     

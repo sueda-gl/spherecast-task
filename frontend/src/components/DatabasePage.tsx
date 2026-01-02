@@ -37,8 +37,6 @@ interface PurchaseOrderLine {
   product_id: number
   quantity: number
   delivery_date: string | null
-  unit_price: number | null
-  total_price: number | null
   notes: string | null
 }
 
@@ -532,8 +530,7 @@ export default function DatabasePage() {
                       <th className="p-4 text-gray-400 font-medium">product_id</th>
                       <th className="p-4 text-gray-400 font-medium">quantity</th>
                       <th className="p-4 text-gray-400 font-medium">delivery_date</th>
-                      <th className="p-4 text-gray-400 font-medium">unit_price</th>
-                      <th className="p-4 text-gray-400 font-medium">total_price</th>
+                      <th className="p-4 text-gray-400 font-medium">notes</th>
                       <th className="p-4 text-gray-400 font-medium text-center">
                         <div className="flex items-center justify-center gap-1">
                           <History size={14} />
@@ -563,10 +560,7 @@ export default function DatabasePage() {
                           }
                         </td>
                         <td className="p-4 text-gray-400">
-                          {line.unit_price ? `$${line.unit_price.toFixed(2)}` : '-'}
-                        </td>
-                        <td className="p-4 text-green-400 font-medium">
-                          {line.total_price ? `$${line.total_price.toLocaleString()}` : '-'}
+                          {line.notes || '-'}
                         </td>
                         <td className="p-4 text-center">
                           <ChangeBadge recordId={line.id} />

@@ -11,10 +11,7 @@ Base = declarative_base()
 
 
 class Product(Base):
-    """
-    Products in the company's catalog.
-    Each product has an internal SKU that the company uses.
-    """
+
     __tablename__ = 'product'
     
     id = Column(Integer, primary_key=True)
@@ -44,13 +41,7 @@ class Supplier(Base):
 
 
 class SupplierProduct(Base):
-    """
-    The relationship between a supplier and a product.
-    
-    This is the CRITICAL table for SKU resolution:
-    - A supplier may use a DIFFERENT SKU for a product than the internal SKU
-    - For example: Internal SKU is "SKU-1-3", but Big Supplier calls it "SKU13"
-    """
+ 
     __tablename__ = 'supplier_product'
     
     supplier_id = Column(Integer, ForeignKey('supplier.id'), primary_key=True)
@@ -70,10 +61,7 @@ class SupplierProduct(Base):
 
 
 class PurchaseOrder(Base):
-    """
-    A purchase order header.
-    Contains metadata about the order (supplier, reference numbers, dates).
-    """
+
     __tablename__ = 'purchase_order'
     
     id = Column(Integer, primary_key=True)
@@ -92,10 +80,7 @@ class PurchaseOrder(Base):
 
 
 class PurchaseOrderLine(Base):
-    """
-    Individual line items on a purchase order.
-    Each line represents a product, quantity, and expected delivery date.
-    """
+  
     __tablename__ = 'purchase_order_line'
     
     id = Column(Integer, primary_key=True)
@@ -103,8 +88,6 @@ class PurchaseOrderLine(Base):
     product_id = Column(Integer, ForeignKey('product.id'), nullable=False)
     quantity = Column(Integer, nullable=False)
     delivery_date = Column(Date)
-    unit_price = Column(Float)
-    total_price = Column(Float)
     notes = Column(Text)
     
     purchase_order = relationship("PurchaseOrder", back_populates="lines")
@@ -115,8 +98,36 @@ class PurchaseOrderLine(Base):
 
 
 def get_engine(db_path: str = "database/spherecast.db"):
-    """Create and return a database engine."""
-    return create_engine(f"sqlite:///{db_path}", echo=False)
+    """Create and return a database engine.
+    
+    Configured with:
+    - WAL mode: Allows concurrent reads during writes (critical for background processing)
+    - Timeout: 30 second timeout to avoid indefinite blocking
+    - check_same_thread=False: Required for multi-threaded access (FastAPI background tasks)
+    """
+    from sqlalchemy import event
+    
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        echo=False,
+        connect_args={
+            "check_same_thread": False,  # Allow multi-threaded access
+            "timeout": 30  # 30 second timeout for lock acquisition
+        },
+        pool_pre_ping=True,  # Verify connections are still valid
+        pool_recycle=3600,  # Recycle connections after 1 hour
+    )
+    
+    # Enable WAL mode for concurrent reads during writes
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")  # Good balance of safety and speed
+        cursor.execute("PRAGMA busy_timeout=30000")  # 30 second busy timeout
+        cursor.close()
+    
+    return engine
 
 
 def create_tables(engine):

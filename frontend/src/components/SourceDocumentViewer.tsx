@@ -3,7 +3,6 @@ import {
   X, 
   FileText, 
   ArrowRight, 
-  Brain, 
   Calendar,
   CheckCircle,
   ChevronLeft,
@@ -399,19 +398,6 @@ export default function SourceDocumentViewer({
                 {formatValue(currentChange.new_value)}
               </pre>
             </div>
-          </div>
-        )}
-
-        {/* LLM Reasoning */}
-        {currentChange.llm_reasoning && (
-          <div className="bg-[#111] border border-[#1a1a1a] rounded-lg p-3">
-            <div className="text-xs text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-              <Brain size={12} className="text-purple-400" />
-              LLM Reasoning
-            </div>
-            <p className="text-xs text-gray-300 leading-relaxed whitespace-pre-wrap">
-              {currentChange.llm_reasoning}
-            </p>
           </div>
         )}
 

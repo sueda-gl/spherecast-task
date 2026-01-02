@@ -70,16 +70,33 @@ class ExtractionAudit:
             db_path: Path to SQLite database
             storage_dir: Directory to store original documents
         """
+        from sqlalchemy import event
+        
         # Ensure the database path is absolute and the directory exists
         db_path = Path(db_path).resolve()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Create engine with proper SQLite connection parameters
+        # WAL mode allows concurrent reads during writes (critical for background processing)
         self.engine = create_engine(
             f"sqlite:///{db_path}", 
             echo=False,
-            connect_args={"check_same_thread": False}
+            connect_args={
+                "check_same_thread": False,  # Allow multi-threaded access
+                "timeout": 30  # 30 second timeout for lock acquisition
+            },
+            pool_pre_ping=True,
         )
+        
+        # Enable WAL mode for concurrent reads during writes
+        @event.listens_for(self.engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.close()
+        
         Base.metadata.create_all(self.engine)
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)

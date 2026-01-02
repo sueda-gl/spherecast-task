@@ -64,16 +64,33 @@ class UpdateAuditTracker:
         Args:
             db_path: Path to audit database
         """
+        from sqlalchemy import event
+        
         # Ensure the database path is absolute and the directory exists
         db_path = Path(db_path).resolve()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Create engine with proper SQLite connection parameters
+        # WAL mode allows concurrent reads during writes (critical for background processing)
         self.engine = create_engine(
             f"sqlite:///{db_path}", 
             echo=False,
-            connect_args={"check_same_thread": False}
+            connect_args={
+                "check_same_thread": False,  # Allow multi-threaded access
+                "timeout": 30  # 30 second timeout for lock acquisition
+            },
+            pool_pre_ping=True,
         )
+        
+        # Enable WAL mode for concurrent reads during writes
+        @event.listens_for(self.engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.close()
+        
         Base.metadata.create_all(self.engine)
     
     def log_operation(
@@ -232,11 +249,27 @@ class UpdateAuditTracker:
             if not operation_result or not operation_result.get("success"):
                 continue
             
+            # Build a clean reasoning message
+            table_name = operation_result.get("table", op.get("table", "unknown"))
+            action_name = op.get("action", operation_result.get("operation", "unknown"))
+            step_num = op.get("step", len(update_ids) + 1)
+            
+            # Format the reasoning message more clearly
+            operation_summary = f"{action_name.upper()} on {table_name}"
+            reason_detail = op.get("reason", "")
+            
+            if reason_detail:
+                llm_reasoning = f"{operation_summary}: {reason_detail}"
+            elif overall_reasoning:
+                llm_reasoning = f"{operation_summary}. {overall_reasoning}"
+            else:
+                llm_reasoning = operation_summary
+            
             update_id = self.log_operation(
                 extraction_id=extraction_id,
                 operation_result=operation_result,
                 source_document_path=source_document_path,
-                llm_reasoning=f"{overall_reasoning}\n\nStep {op.get('step', '?')}: {op.get('action', 'unknown')} on {op.get('table', 'unknown')}",
+                llm_reasoning=llm_reasoning,
                 confidence=confidence
             )
             if update_id:

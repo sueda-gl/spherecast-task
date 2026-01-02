@@ -38,10 +38,14 @@ class OperationExecutor:
         # Get table metadata for column info
         self.inspector = inspect(engine)
         self.table_columns = {}
+        self.table_primary_keys = {}
         for table_name in self.inspector.get_table_names():
             self.table_columns[table_name] = [
                 col["name"] for col in self.inspector.get_columns(table_name)
             ]
+            # Get primary key columns for composite key support
+            pk = self.inspector.get_pk_constraint(table_name)
+            self.table_primary_keys[table_name] = pk.get("constrained_columns", ["id"])
     
     def execute(
         self,
@@ -124,7 +128,7 @@ class OperationExecutor:
                                 results["records_created"].append({
                                     "table": table,
                                     "id": new_id,
-                                    "values": result.get("values")  # Use actual inserted values (after placeholder substitution)
+                                    "values": op.get("values")
                                 })
                         
                         elif op_type == "UPDATE":
@@ -244,52 +248,29 @@ class OperationExecutor:
             if reason:
                 print(f"  Reason: {reason[:60]}")
         
-        # Handle composite key tables (no auto-increment id)
-        # For supplier_product, the identity is (supplier_id, product_id)
-        composite_key_tables = {
-            "supplier_product": ["supplier_id", "product_id"]
-        }
-        
         # Build and execute INSERT
         columns = list(filtered_values.keys())
         placeholders = [f":{col}" for col in columns]
         
-        # Use INSERT OR IGNORE for junction tables to handle idempotent operations
-        if table in composite_key_tables:
-            query = text(f"""
-                INSERT OR IGNORE INTO {table} ({', '.join(columns)})
-                VALUES ({', '.join(placeholders)})
-            """)
-        else:
-            query = text(f"""
-                INSERT INTO {table} ({', '.join(columns)})
-                VALUES ({', '.join(placeholders)})
-            """)
+        query = text(f"""
+            INSERT INTO {table} ({', '.join(columns)})
+            VALUES ({', '.join(placeholders)})
+        """)
         
         result = conn.execute(query, filtered_values)
-        new_id = result.lastrowid
-        rows_affected = result.rowcount
         
-        if table in composite_key_tables:
-            # Build composite key from values
-            key_cols = composite_key_tables[table]
-            key_parts = [str(filtered_values.get(col, "")) for col in key_cols]
-            composite_id = "-".join(key_parts)
-            
-            if rows_affected == 0:
-                # Record already existed, this is fine for junction tables
-                if verbose:
-                    print(f"  ✓ {table} ({', '.join(key_cols)})=({', '.join(key_parts)}) already exists (skipped)")
-                return {"success": True, "id": composite_id, "values": filtered_values, "skipped": True}
-            else:
-                if verbose:
-                    print(f"  ✓ Created {table} ({', '.join(key_cols)})=({', '.join(key_parts)})")
-                return {"success": True, "id": composite_id, "values": filtered_values}
+        # Handle composite primary keys (e.g., supplier_product table)
+        pk_columns = self.table_primary_keys.get(table, ["id"])
+        if len(pk_columns) > 1:
+            # Composite key - format as "val1-val2" from the inserted values
+            new_id = "-".join(str(filtered_values.get(pk)) for pk in pk_columns)
+        else:
+            new_id = result.lastrowid
         
         if verbose:
             print(f"  ✓ Created {table} id={new_id}")
         
-        return {"success": True, "id": new_id, "values": filtered_values}
+        return {"success": True, "id": new_id}
     
     def _execute_update(
         self,
@@ -345,17 +326,13 @@ class OperationExecutor:
         
         old_values = dict(existing._mapping)
         
-        # Handle composite key tables (supplier_product) - build composite record_id
-        composite_key_tables = {
-            "supplier_product": ["supplier_id", "product_id"]
-        }
-        
-        if table in composite_key_tables:
-            key_cols = composite_key_tables[table]
-            key_parts = [str(old_values.get(col, "")) for col in key_cols]
-            record_id = "-".join(key_parts)
+        # Handle composite primary keys (e.g., supplier_product table)
+        pk_columns = self.table_primary_keys.get(table, ["id"])
+        if len(pk_columns) > 1:
+            # Composite key - format as "val1-val2"
+            record_id = "-".join(str(old_values.get(pk)) for pk in pk_columns)
         else:
-            record_id = old_values.get("id")
+            record_id = old_values.get(pk_columns[0]) if pk_columns else old_values.get("id")
         
         # Track changes
         changes = {}
@@ -403,16 +380,11 @@ class OperationExecutor:
         
         Also handles SKU-based lookups for product_id.
         Case-insensitive lookup for placeholders.
-        Handles SKU format variations (hyphens vs underscores).
         """
         result = {}
         
-        # Build normalized lookup dict for flexible matching
-        # Normalize: lowercase and replace hyphens/underscores for comparison
-        def normalize_key(k):
-            return k.lower().replace('-', '_').replace(' ', '_')
-        
-        created_ids_normalized = {normalize_key(k): v for k, v in created_ids.items()}
+        # Build lowercase lookup dict for case-insensitive matching
+        created_ids_lower = {k.lower(): v for k, v in created_ids.items()}
         
         for key, value in values.items():
             if isinstance(value, str) and value.upper().startswith("__NEW_"):
@@ -422,37 +394,24 @@ class OperationExecutor:
                     if verbose:
                         print(f"  → Substituting {value} → {actual_id}")
                     result[key] = actual_id
-                # Try normalized match (handles PRODUCT-11 vs PRODUCT_11)
-                elif normalize_key(value) in created_ids_normalized:
-                    actual_id = created_ids_normalized[normalize_key(value)]
+                # Try case-insensitive match
+                elif value.lower() in created_ids_lower:
+                    actual_id = created_ids_lower[value.lower()]
                     if verbose:
                         print(f"  → Substituting {value} → {actual_id}")
                     result[key] = actual_id
                 else:
-                    # Try SKU-based lookup with both patterns
-                    # Pattern 1: __NEW_product_sku_XXX
-                    # Pattern 2: __NEW_product_id_XXX (LLM often uses this)
-                    sku_match = re.match(r"__NEW_product_(?:sku|id)_(.+)", value, re.IGNORECASE)
+                    # Try SKU-based lookup
+                    sku_match = re.match(r"__NEW_product_sku_(.+)", value, re.IGNORECASE)
                     if sku_match:
                         sku = sku_match.group(1)
-                        # Try multiple key formats
-                        possible_keys = [
-                            f"__NEW_product_sku_{sku}",
-                            f"__NEW_product_id_{sku}",
-                            f"__new_product_sku_{sku.lower()}",
-                            f"__new_product_id_{sku.lower()}",
-                        ]
-                        found = False
-                        for try_key in possible_keys:
-                            normalized_try = normalize_key(try_key)
-                            if normalized_try in created_ids_normalized:
-                                actual_id = created_ids_normalized[normalized_try]
-                                if verbose:
-                                    print(f"  → Substituting (by SKU) {value} → {actual_id}")
-                                result[key] = actual_id
-                                found = True
-                                break
-                        if not found:
+                        sku_key = f"__NEW_product_sku_{sku}"
+                        if sku_key in created_ids:
+                            actual_id = created_ids[sku_key]
+                            if verbose:
+                                print(f"  → Substituting (by SKU) {value} → {actual_id}")
+                            result[key] = actual_id
+                        else:
                             result[key] = value  # Keep placeholder, will cause FK error
                     else:
                         result[key] = value  # Keep placeholder

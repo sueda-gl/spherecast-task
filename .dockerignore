@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv/
+venv/
+ENV/
+*.egg-info/
+.eggs/
+
+# Node.js
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Uploads and audit storage (will be created fresh)
+uploads/*
+audit_storage/*
+
+# Keep directories but not contents
+!uploads/.gitkeep
+!audit_storage/.gitkeep
+
+# Database files (will be created fresh)
+database/*.db
+database/*.db-shm
+database/*.db-wal
+
+# Documentation (not needed in container)
+*.md
+!README.md
+
+# Testing
+tests/
+pytest_cache/
+.coverage
+
+# UV
+uv.lock
+

@@ -1,0 +1,30 @@
+# Docker Compose for local development or VPS deployment
+# Usage: docker-compose up --build
+
+version: '3.8'
+
+services:
+  spherecast:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ENVIRONMENT=production
+      - PORT=8000
+    volumes:
+      # Persist uploads and audit storage
+      - ./uploads:/app/uploads
+      - ./audit_storage:/app/audit_storage
+      # Persist database (optional - remove if you want fresh DB each time)
+      - ./database:/app/database
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+

@@ -61,14 +61,6 @@ DOCUMENT_EXTRACTION_SCHEMA = {
                         "type": "integer",
                         "description": "Quantity ordered"
                     },
-                    "unit_price": {
-                        "type": ["number", "null"],
-                        "description": "Price per unit"
-                    },
-                    "total_price": {
-                        "type": ["number", "null"],
-                        "description": "Total price for this line"
-                    },
                     "delivery_date": {
                         "type": ["string", "null"],
                         "description": "Line-specific delivery date in ISO format (YYYY-MM-DD)"
@@ -129,7 +121,6 @@ DOCUMENT_EXTRACTION_PROMPT = """You are a specialized purchase order extraction 
    - **SKU**: The product code/SKU/item number (CRITICAL - be very careful with this)
    - **Quantity**: The quantity ordered
    - **Description**: Product description if available
-   - **Prices**: Unit price and total price if shown
    - **Dates**: Line-specific delivery dates if mentioned
 
 5. **SKU Handling** (VERY IMPORTANT):
@@ -169,8 +160,6 @@ You MUST respond with valid JSON matching this structure:
       "sku_alternatives": ["SKU XXX", "SKUXXX"],
       "description": "...",
       "quantity": 1000,
-      "unit_price": 10.50,
-      "total_price": 10500.00,
       "delivery_date": "YYYY-MM-DD",
       "notes": "..."
     }

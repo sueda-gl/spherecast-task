@@ -9,11 +9,13 @@ This wraps the LLM with function calling capabilities, allowing it to:
 The agent runs a conversation loop until it reaches a conclusion.
 """
 
+import os
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass
 
-from llm_client import LLMClient
+import openai
+
 from reasoning.db_tools import DatabaseTools
 
 
@@ -51,17 +53,19 @@ class ToolAgent:
         self,
         db_tools: DatabaseTools,
         api_key: str = None,
-        model: str = "gpt-5.2",
+        model: str = "gpt-4o",
         temperature: float = 0.0,
         max_iterations: int = 20,
         verbose: bool = True
     ):
         self.db_tools = db_tools
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.model = model
+        self.temperature = temperature
         self.max_iterations = max_iterations
         self.verbose = verbose
         
-        # Use centralized LLMClient instead of raw OpenAI client
-        self.llm = LLMClient(api_key=api_key, model=model, temperature=temperature)
+        self.client = openai.OpenAI(api_key=self.api_key)
         self.tools = DatabaseTools.get_tool_definitions()
     
     def run(
@@ -103,12 +107,14 @@ class ToolAgent:
                 print(f"Iteration {iteration}")
                 print(f"{'─'*70}")
             
-            # Call LLM using centralized client
+            # Call LLM
             try:
-                response = self.llm.call_with_tools_conversation(
+                response = self.client.chat.completions.create(
+                    model=self.model,
                     messages=messages,
                     tools=self.tools,
-                    tool_choice="auto"
+                    tool_choice="auto",
+                    temperature=self.temperature
                 )
             except Exception as e:
                 return AgentResult(

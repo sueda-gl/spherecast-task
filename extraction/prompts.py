@@ -17,8 +17,8 @@ EXTRACTION_PROMPT = """You are analyzing a business document. Extract ALL inform
    - Reference numbers (PO numbers, invoice numbers, tracking numbers, etc.)
    - Company names (supplier, customer, vendor)
    - Line items: For tables, READ the column headers from the document and use them as field names
-     * If the table shows columns: "sku", "title", "quantity", "date", "total price"
-     * Then use those EXACT names: {{"sku": "...", "title": "...", "quantity": ..., "date": "...", "total_price": "..."}}
+     * If the table shows columns: "sku", "title", "quantity", "date", "notes"
+     * Then use those EXACT names: {{"sku": "...", "title": "...", "quantity": ..., "date": "...", "notes": "..."}}
      * Extract ALL columns present in the table
      * DO NOT invent or standardize column names - use what you see
    - Amounts and totals
@@ -38,8 +38,8 @@ EXTRACTION_PROMPT = """You are analyzing a business document. Extract ALL inform
 - Look at the table in the document and identify the column headers
 - Use those EXACT column names (with spaces converted to underscores) as keys in "extracted_fields"
 - Each document may have different columns - adapt to what you see
-- Example: Document table with columns [sku | title | quantity | date | total price]
-  → extracted_fields: {{"sku": "...", "title": "...", "quantity": ..., "date": "...", "total_price": ...}}
+- Example: Document table with columns [sku | title | quantity | date | notes]
+  → extracted_fields: {{"sku": "...", "title": "...", "quantity": ..., "date": "...", "notes": ...}}
 
 {{
   "document_classification": {{
@@ -59,8 +59,8 @@ EXTRACTION_PROMPT = """You are analyzing a business document. Extract ALL inform
         "row_number": 1,
         "extracted_fields": {{
           // USE ACTUAL COLUMN NAMES FROM THE TABLE HEADER
-          // Example: if table shows [sku | title | quantity | date | total price]
-          // Then use: {{"sku": "...", "title": "...", "quantity": ..., "date": "...", "total_price": "..."}}
+          // Example: if table shows [sku | title | quantity | date | notes]
+          // Then use: {{"sku": "...", "title": "...", "quantity": ..., "date": "...", "notes": "..."}}
         }}
       }}
     ],
@@ -96,7 +96,7 @@ EXTRACTION_PROMPT = """You are analyzing a business document. Extract ALL inform
 3. **READ column headers from the table** - Each document may have different column names:
    - Look at the table header row in the document
    - Use those EXACT column names as your field names in extracted_fields
-   - Convert spaces to underscores (e.g., "total price" → "total_price")
+   - Convert spaces to underscores (e.g., "delivery date" → "delivery_date")
    - Do NOT use generic names like "field1, field2" or invent your own names
    - Example: If table has columns [sku, title, quantity, date, total price], your JSON should have those exact fields
 4. **Ambiguities only when needed** - Leave ambiguities array empty [] if everything is clearly identified
@@ -224,6 +224,57 @@ Examples:
     "critical_errors": 0
   }}
 }}
+
+# ISSUE FORMAT - CRITICAL: BE EXPLICIT AND SPECIFIC
+
+When you DO find an issue, you MUST provide detailed, explicit information. Each issue must include:
+
+1. **field**: The exact JSON path to the field with the issue
+2. **document_shows**: Quote EXACTLY what you see in the document (verbatim transcription)
+3. **json_claims**: Quote EXACTLY what the extraction JSON claims for this field
+4. **discrepancy**: A clear statement of the specific difference (e.g., "Document shows quantity '10' but JSON has '100' - a 10x difference")
+5. **business_impact**: Why this matters (e.g., "Would cause 10x over-ordering")
+6. **severity**: high/medium/low
+
+Example issue format:
+{{
+  "issues": [
+    {{
+      "field": "line_items[0].quantity",
+      "document_shows": "10",
+      "json_claims": "100",
+      "discrepancy": "The document clearly shows the quantity as '10' in the table, but the extraction JSON has '100'. This is a 10x difference - likely an extra zero was added.",
+      "business_impact": "Would cause 10x over-ordering, leading to significant inventory and financial errors",
+      "severity": "high"
+    }},
+    {{
+      "field": "line_items[2].sku",
+      "document_shows": "SKU-1A2B",
+      "json_claims": "SKU-IA2B",
+      "discrepancy": "The document shows 'SKU-1A2B' with the number '1', but the extraction has 'SKU-IA2B' with the letter 'I'. The character '1' was misread as 'I'.",
+      "business_impact": "Would result in wrong product being ordered - SKU-IA2B may not exist or be a different product",
+      "severity": "high"
+    }},
+    {{
+      "field": "extracted_entities.totals[0].value",
+      "document_shows": "$1,234.56",
+      "json_claims": "1234.65",
+      "discrepancy": "The document shows total as '$1,234.56' but the extraction has '1234.65'. The cents portion differs: .56 vs .65 - digits appear to be transposed.",
+      "business_impact": "Would cause billing discrepancy of $0.09",
+      "severity": "high"
+    }}
+  ]
+}}
+
+**NEVER give vague issues like:**
+- "There may be a discrepancy" (vague - WHAT discrepancy?)
+- "The value might be wrong" (vague - WHAT value? HOW is it wrong?)
+- "Check the SKU" (vague - WHAT does the document show vs the JSON?)
+
+**ALWAYS be specific:**
+- Quote the EXACT text from the document
+- Quote the EXACT value from the JSON
+- Explain PRECISELY what the difference is
 
 # SEVERITY LEVELS (Only use if there's an ACTUAL data mismatch)
 

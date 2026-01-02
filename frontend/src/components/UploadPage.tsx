@@ -1,41 +1,28 @@
 import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, Mail, CheckCircle, AlertCircle, Loader2, FileText, Eye } from 'lucide-react'
-
-interface UploadStatus {
-  type: 'idle' | 'uploading' | 'success' | 'error'
-  message?: string
-  result?: any
-}
+import { Upload, Mail, CheckCircle, AlertCircle, Loader2, FileText, Database } from 'lucide-react'
+import type { ProcessingState } from '../App'
 
 interface UploadPageProps {
   onNavigateToExtractions?: () => void
+  processingState: ProcessingState
+  setProcessingState: React.Dispatch<React.SetStateAction<ProcessingState>>
+  startPolling: (extractionId: number) => void
 }
 
-export default function UploadPage({ onNavigateToExtractions }: UploadPageProps) {
+export default function UploadPage({ 
+  onNavigateToExtractions, 
+  processingState,
+  setProcessingState,
+  startPolling 
+}: UploadPageProps) {
   const [emailFile, setEmailFile] = useState<File | null>(null)
-  const [status, setStatus] = useState<UploadStatus>({ type: 'idle' })
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
-    if (acceptedFiles.length > 0) {
-      const file = acceptedFiles[0]
-      setEmailFile(file)
-      // Auto-submit when file is dropped
-      handleUpload(file)
-    }
-  }, [])
+  // Use the processing state from App.tsx
+  const status = processingState
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: {
-      'message/rfc822': ['.eml'],
-      'application/octet-stream': ['.eml'],
-    },
-    maxFiles: 1,
-  })
-
-  const handleUpload = async (file: File) => {
-    setStatus({ type: 'uploading', message: 'Processing email and document...' })
+  const handleUpload = useCallback(async (file: File) => {
+    setProcessingState({ type: 'uploading', message: 'Extracting data from document...' })
 
     try {
       const formData = new FormData()
@@ -53,25 +40,61 @@ export default function UploadPage({ onNavigateToExtractions }: UploadPageProps)
 
       const data = await response.json()
 
-      setStatus({
-        type: 'success',
-        message: `Extraction complete! ${data.message || ''}`,
-        result: data,
-      })
+      // If status is 'processing', the database is being updated in background
+      if (data.status === 'processing') {
+        setProcessingState({
+          type: 'processing_db',
+          message: 'Extraction complete! Updating database...',
+          result: data,
+          processingStatus: 'processing',
+          extractionId: data.extraction_id
+        })
 
-      // Navigate to extractions page after 2 seconds
-      setTimeout(() => {
-        if (onNavigateToExtractions) {
-          onNavigateToExtractions()
-        }
-      }, 2000)
+        // Start polling for status updates (handled at App level, persists across pages)
+        startPolling(data.extraction_id)
+
+      } else {
+        // Not auto-processing (pending review)
+        setProcessingState({
+          type: 'success',
+          message: `Extraction complete! ${data.message || ''}`,
+          result: data,
+          processingStatus: 'extracted',
+          extractionId: data.extraction_id
+        })
+
+        // Navigate to extractions page after 2 seconds
+        setTimeout(() => {
+          if (onNavigateToExtractions) {
+            onNavigateToExtractions()
+          }
+        }, 2000)
+      }
     } catch (error) {
-      setStatus({
+      setProcessingState({
         type: 'error',
         message: error instanceof Error ? error.message : 'Processing failed',
       })
     }
-  }
+  }, [setProcessingState, startPolling, onNavigateToExtractions])
+
+  const onDrop = useCallback((acceptedFiles: File[]) => {
+    if (acceptedFiles.length > 0) {
+      const file = acceptedFiles[0]
+      setEmailFile(file)
+      // Auto-submit when file is dropped
+      handleUpload(file)
+    }
+  }, [handleUpload])
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: {
+      'message/rfc822': ['.eml'],
+      'application/octet-stream': ['.eml'],
+    },
+    maxFiles: 1,
+  })
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -168,10 +191,14 @@ export default function UploadPage({ onNavigateToExtractions }: UploadPageProps)
                 ${status.type === 'success' ? 'bg-green-500/10 border border-green-500/20' : ''}
                 ${status.type === 'error' ? 'bg-red-500/10 border border-red-500/20' : ''}
                 ${status.type === 'uploading' ? 'bg-blue-500/10 border border-blue-500/20' : ''}
+                ${status.type === 'processing_db' ? 'bg-amber-500/10 border border-amber-500/20' : ''}
               `}
             >
               {status.type === 'uploading' && (
                 <Loader2 className="text-blue-400 animate-spin flex-shrink-0" size={20} />
+              )}
+              {status.type === 'processing_db' && (
+                <Database className="text-amber-400 animate-pulse flex-shrink-0" size={20} />
               )}
               {status.type === 'success' && (
                 <CheckCircle className="text-green-400 flex-shrink-0" size={20} />
@@ -186,6 +213,7 @@ export default function UploadPage({ onNavigateToExtractions }: UploadPageProps)
                   ${status.type === 'success' ? 'text-green-400' : ''}
                   ${status.type === 'error' ? 'text-red-400' : ''}
                   ${status.type === 'uploading' ? 'text-blue-400' : ''}
+                  ${status.type === 'processing_db' ? 'text-amber-400' : ''}
                 `}
                 >
                   {status.message}
@@ -197,15 +225,52 @@ export default function UploadPage({ onNavigateToExtractions }: UploadPageProps)
                       <p>Verified: <span className="text-white font-medium">{status.result.verified ? 'Yes ✓' : 'No'}</span></p>
                       <p>Extraction ID: <span className="text-white font-medium">#{status.result.extraction_id}</span></p>
                     </div>
-                    {status.result.status === 'processing' && (
-                      <div className="mt-3 flex items-center gap-2 text-xs text-blue-300 bg-blue-500/10 p-3 rounded border border-blue-500/20">
-                        <Loader2 size={14} className="animate-spin" />
-                        <span>Master LLM processing database operations in background...</span>
+                    
+                    {/* Database Update Progress */}
+                    {status.type === 'processing_db' && (
+                      <div className="mt-4 space-y-3">
+                        <div className="flex items-center gap-3 text-sm text-amber-300 bg-amber-500/10 p-3 rounded border border-amber-500/20">
+                          <Loader2 size={16} className="animate-spin flex-shrink-0" />
+                          <div>
+                            <p className="font-medium">Updating Database</p>
+                            <p className="text-xs text-amber-200/70 mt-0.5">
+                              Master LLM is analyzing extraction and updating records...
+                            </p>
+                          </div>
+                        </div>
+                        
+                        {/* Progress Steps */}
+                        <div className="flex items-center gap-2 text-xs text-gray-400">
+                          <div className="flex items-center gap-1.5">
+                            <CheckCircle size={12} className="text-green-400" />
+                            <span>Extracted</span>
+                          </div>
+                          <div className="w-4 h-px bg-gray-600" />
+                          <div className="flex items-center gap-1.5">
+                            <CheckCircle size={12} className="text-green-400" />
+                            <span>Verified</span>
+                          </div>
+                          <div className="w-4 h-px bg-gray-600" />
+                          <div className="flex items-center gap-1.5 text-amber-400">
+                            <Loader2 size={12} className="animate-spin" />
+                            <span>Updating DB</span>
+                          </div>
+                        </div>
                       </div>
                     )}
-                    <p className="mt-3 text-xs text-gray-400">
-                      Redirecting to extractions page in 2 seconds...
-                    </p>
+                    
+                    {status.type === 'success' && status.processingStatus === 'completed' && (
+                      <div className="mt-3 flex items-center gap-2 text-xs text-green-300 bg-green-500/10 p-3 rounded border border-green-500/20">
+                        <CheckCircle size={14} />
+                        <span>Database updated successfully!</span>
+                      </div>
+                    )}
+                    
+                    {status.type === 'success' && (
+                      <p className="mt-3 text-xs text-gray-400">
+                        Redirecting to extractions page in 2 seconds...
+                      </p>
+                    )}
                   </>
                 )}
               </div>
@@ -223,19 +288,13 @@ export default function UploadPage({ onNavigateToExtractions }: UploadPageProps)
           )}
         </form>
 
-        {/* Info Cards */}
-        <div className="grid grid-cols-3 gap-4 mt-8">
-          <div className="bg-dark-surface border border-dark-border rounded-lg p-4">
-            <div className="text-2xl font-bold text-white mb-1">{">"} 90%</div>
-            <div className="text-sm text-gray-400">Auto-processed</div>
-          </div>
-          <div className="bg-dark-surface border border-dark-border rounded-lg p-4">
-            <div className="text-2xl font-bold text-white mb-1">75-90%</div>
-            <div className="text-sm text-gray-400">Queued for review</div>
-          </div>
-          <div className="bg-dark-surface border border-dark-border rounded-lg p-4">
-            <div className="text-2xl font-bold text-white mb-1">{"<"} 75%</div>
-            <div className="text-sm text-gray-400">Manual review</div>
+        {/* Info Card */}
+        <div className="mt-8">
+          <div className="bg-dark-surface border border-dark-border rounded-lg p-5 flex items-start gap-4">
+            <div className="text-3xl font-bold text-green-400 whitespace-nowrap">{">"} 90%</div>
+            <div className="text-sm text-gray-400 leading-relaxed">
+              When the extraction accuracy score is higher than 90%, the data will be <span className="text-white font-medium">automatically processed</span> and the database will be <span className="text-white font-medium">updated without manual review</span>.
+            </div>
           </div>
         </div>
       </div>

@@ -8,9 +8,10 @@ Provides REST endpoints for:
 - Statistics and audit trail
 """
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import shutil
 import json
@@ -34,35 +35,100 @@ from sqlalchemy import desc
 
 app = FastAPI(title="SphereCast API", version="0.1.0")
 
+# Environment configuration
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
 # Enable CORS for frontend
+# In production, requests come from same origin so "*" is safe
+# In development, allow localhost ports
+allowed_origins = ["http://localhost:5173", "http://localhost:3000", "*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # Vite and common dev ports
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize orchestrator and update tracker
-orchestrator = UniversalOrchestrator(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    audit_db="database/audit.db",
-    model="gpt-5.2",
-    database_path="database/spherecast.db"
-)
+# Lazy initialization for orchestrator and update tracker
+# This prevents crashes if OPENAI_API_KEY is not set at startup (e.g., during Railway build)
+_orchestrator = None
+_update_tracker = None
 
-# Initialize update tracker for API queries
-update_tracker = UpdateAuditTracker(db_path="database/audit.db")
+def get_orchestrator():
+    """Get or create the orchestrator instance (lazy initialization)."""
+    global _orchestrator
+    if _orchestrator is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY environment variable not set")
+        _orchestrator = UniversalOrchestrator(
+            api_key=api_key,
+            audit_db="database/audit.db",
+            model="gpt-5.2",
+            database_path="database/spherecast.db"
+        )
+    return _orchestrator
+
+def get_update_tracker():
+    """Get or create the update tracker instance (lazy initialization)."""
+    global _update_tracker
+    if _update_tracker is None:
+        _update_tracker = UpdateAuditTracker(db_path="database/audit.db")
+    return _update_tracker
+
+
+def auto_init_database():
+    """
+    Auto-initialize the database with schema and seed data if empty.
+    Called at startup for Railway deployments (no persistent volumes).
+    """
+    from database.models import Base, create_tables
+    
+    db_path = Path("database/spherecast.db")
+    audit_db_path = Path("database/audit.db")
+    
+    # Ensure database directory exists
+    db_path.parent.mkdir(exist_ok=True)
+    
+    # Create spherecast database if it doesn't exist or is empty
+    if not db_path.exists() or db_path.stat().st_size == 0:
+        print("Initializing spherecast database...")
+        engine = get_engine(str(db_path))
+        create_tables(engine)
+        
+        # Seed with initial data
+        from database.setup import seed_data
+        session = get_session(engine)
+        try:
+            seed_data(session)
+            print("Database initialized with seed data.")
+        finally:
+            session.close()
+    
+    # Create audit database if it doesn't exist
+    if not audit_db_path.exists():
+        print("Initializing audit database...")
+        from audit.update_tracker import Base as AuditBase
+        from sqlalchemy import create_engine
+        audit_engine = create_engine(f"sqlite:///{audit_db_path}")
+        AuditBase.metadata.create_all(audit_engine)
+        print("Audit database initialized.")
+
+
+# Auto-initialize databases on startup (for Railway)
+auto_init_database()
 
 # Upload directory
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 
-@app.get("/")
-async def root():
-    """API health check."""
-    return {"status": "ok", "service": "SphereCast API", "version": "0.1.0"}
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint for Railway deployment monitoring."""
+    return {"status": "ok", "service": "SphereCast API", "version": "0.1.0", "environment": ENVIRONMENT}
 
 
 def process_in_background(extraction_id: int, email_body: str, extracted_data: dict, document_path: str):
@@ -72,10 +138,10 @@ def process_in_background(extraction_id: int, email_body: str, extracted_data: d
     """
     try:
         # Update status to "processing"
-        orchestrator.audit.update_processing_status(extraction_id, "processing")
+        get_orchestrator().audit.update_processing_status(extraction_id, "processing")
         
         # Run Master LLM reasoning
-        result = orchestrator._process_automatically(
+        result = get_orchestrator()._process_automatically(
             email_body=email_body,
             extracted_data=extracted_data,
             extraction_id=extraction_id,
@@ -84,30 +150,34 @@ def process_in_background(extraction_id: int, email_body: str, extracted_data: d
         )
         
         # Update with result
-        orchestrator.audit.update_processing_result(extraction_id, {
+        get_orchestrator().audit.update_processing_result(extraction_id, {
             "status": "auto_processed",
             "result": result
         })
-        orchestrator.audit.update_processing_status(extraction_id, "completed")
+        get_orchestrator().audit.update_processing_status(extraction_id, "completed")
         
         print(f"\n✓ Background processing completed for extraction #{extraction_id}")
         
     except Exception as e:
         print(f"\n✗ Background processing failed for extraction #{extraction_id}: {e}")
-        orchestrator.audit.update_processing_status(extraction_id, "failed")
-        orchestrator.audit.update_processing_result(extraction_id, {
+        get_orchestrator().audit.update_processing_status(extraction_id, "failed")
+        get_orchestrator().audit.update_processing_result(extraction_id, {
             "status": "failed",
             "error": str(e)
         })
 
 
 @app.post("/api/process-email")
-async def process_email_file(
+def process_email_file(
     email_file: UploadFile = File(...),
     background_tasks: BackgroundTasks = None
 ):
     """
     Process an .eml file containing email body and document attachment.
+    
+    Note: Using def (not async def) so FastAPI runs this in a thread pool.
+    This prevents the synchronous LLM calls from blocking the event loop,
+    allowing other API endpoints to remain responsive during extraction.
     
     Args:
         email_file: .eml file with email and attachment
@@ -117,8 +187,8 @@ async def process_email_file(
     """
     
     try:
-        # Read the .eml file
-        eml_content = await email_file.read()
+        # Read the .eml file (sync version since we're in a thread pool)
+        eml_content = email_file.file.read()
         
         # Parse the email
         msg = BytesParser(policy=policy.default).parsebytes(eml_content)
@@ -164,13 +234,13 @@ async def process_email_file(
         # Extract and verify document (fast - returns immediately)
         full_email_body = f"From: {email_from}\nSubject: {email_subject}\n\n{email_body}"
         
-        extraction_result = orchestrator.extractor.extract_with_verification(
+        extraction_result = get_orchestrator().extractor.extract_with_verification(
             document_path=document_path,
             verbose=False
         )
         
         # Log to audit
-        extraction_id = orchestrator.audit.log_extraction(
+        extraction_id = get_orchestrator().audit.log_extraction(
             email_id=email_id,
             document_path=document_path,
             extraction_result=extraction_result
@@ -181,7 +251,7 @@ async def process_email_file(
         
         # Determine if should auto-process
         should_auto_process = (
-            confidence >= orchestrator.AUTO_PROCESS_THRESHOLD and verified
+            confidence >= get_orchestrator().AUTO_PROCESS_THRESHOLD and verified
         )
         
         # Return immediately with extraction results
@@ -222,13 +292,16 @@ async def process_email_file(
 
 
 @app.post("/api/process")
-async def process_document(
+def process_document(
     email_id: str = Form(...),
     email_body: str = Form(...),
     document: UploadFile = File(...)
 ):
     """
     Process an email with attached document (legacy endpoint).
+    
+    Note: Using def (not async def) to run in thread pool,
+    preventing blocking during LLM calls.
     
     Args:
         email_id: Unique identifier for the email
@@ -266,9 +339,12 @@ async def process_document(
 
 
 @app.get("/api/extractions")
-async def get_all_extractions(limit: int = 100):
+def get_all_extractions(limit: int = 100):
     """
     Get all extractions from the audit database.
+    
+    Note: Using def (not async def) so FastAPI runs this in a thread pool,
+    preventing synchronous DB calls from blocking the event loop.
     
     Args:
         limit: Maximum number of extractions to return
@@ -278,7 +354,7 @@ async def get_all_extractions(limit: int = 100):
     """
     
     try:
-        extractions = orchestrator.audit.get_all_extractions(limit=limit)
+        extractions = get_orchestrator().audit.get_all_extractions(limit=limit)
         return {
             "success": True,
             "count": len(extractions),
@@ -289,9 +365,11 @@ async def get_all_extractions(limit: int = 100):
 
 
 @app.get("/api/extraction/{extraction_id}")
-async def get_extraction(extraction_id: int):
+def get_extraction(extraction_id: int):
     """
     Get complete details of a specific extraction.
+    
+    Note: Using def (not async def) so FastAPI runs this in a thread pool.
     
     Includes:
     - Extraction data
@@ -307,12 +385,12 @@ async def get_extraction(extraction_id: int):
     """
     
     try:
-        extraction = orchestrator.audit.get_extraction(extraction_id)
+        extraction = get_orchestrator().audit.get_extraction(extraction_id)
         if not extraction:
             raise HTTPException(status_code=404, detail="Extraction not found")
         
         # Get database updates for this extraction
-        updates = update_tracker.get_updates_for_extraction(extraction_id)
+        updates = get_update_tracker().get_updates_for_extraction(extraction_id)
         
         # Add database updates to response
         extraction['database_updates'] = [
@@ -343,7 +421,7 @@ async def get_extraction(extraction_id: int):
 
 
 @app.get("/api/review-queue")
-async def get_review_queue(priority: Optional[str] = None):
+def get_review_queue(priority: Optional[str] = None):
     """
     Get items in the review queue.
     
@@ -355,7 +433,7 @@ async def get_review_queue(priority: Optional[str] = None):
     """
     
     try:
-        queue = orchestrator.get_review_queue(priority=priority)
+        queue = get_orchestrator().get_review_queue(priority=priority)
         return {
             "success": True,
             "count": len(queue),
@@ -366,7 +444,7 @@ async def get_review_queue(priority: Optional[str] = None):
 
 
 @app.get("/api/statistics")
-async def get_statistics(days: int = 7):
+def get_statistics(days: int = 7):
     """
     Get processing statistics.
     
@@ -378,7 +456,7 @@ async def get_statistics(days: int = 7):
     """
     
     try:
-        stats = orchestrator.get_statistics(days=days)
+        stats = get_orchestrator().get_statistics(days=days)
         return {
             "success": True,
             "statistics": stats
@@ -388,7 +466,7 @@ async def get_statistics(days: int = 7):
 
 
 @app.post("/api/approve/{extraction_id}")
-async def approve_extraction(extraction_id: int):
+def approve_extraction(extraction_id: int):
     """
     Approve an extraction that was queued for review.
     
@@ -411,9 +489,11 @@ async def approve_extraction(extraction_id: int):
 
 
 @app.get("/api/document/{extraction_id}")
-async def get_document(extraction_id: int):
+def get_document(extraction_id: int):
     """
     Get the document image/PDF for preview.
+    
+    Note: Using def (not async def) to run in thread pool.
     
     Args:
         extraction_id: Database ID of the extraction
@@ -424,7 +504,7 @@ async def get_document(extraction_id: int):
     from fastapi.responses import FileResponse
     
     try:
-        extraction = orchestrator.audit.get_extraction(extraction_id)
+        extraction = get_orchestrator().audit.get_extraction(extraction_id)
         if not extraction:
             raise HTTPException(status_code=404, detail="Extraction not found")
         
@@ -463,9 +543,11 @@ async def get_document(extraction_id: int):
 # ============================================================================
 
 @app.get("/api/database/purchase-orders")
-async def get_purchase_orders(limit: int = 100):
+def get_purchase_orders(limit: int = 100):
     """
     Get all purchase orders from the production database.
+    
+    Note: Using def (not async def) so FastAPI runs this in a thread pool.
     
     Args:
         limit: Maximum number of records to return
@@ -505,7 +587,7 @@ async def get_purchase_orders(limit: int = 100):
 
 
 @app.get("/api/database/purchase-orders/{po_id}")
-async def get_purchase_order_details(po_id: int):
+def get_purchase_order_details(po_id: int):
     """
     Get detailed purchase order with line items.
     
@@ -532,8 +614,6 @@ async def get_purchase_order_details(po_id: int):
                     "product_id": line.product_id,
                     "quantity": line.quantity,
                     "delivery_date": line.delivery_date.isoformat() if line.delivery_date else None,
-                    "unit_price": line.unit_price,
-                    "total_price": line.total_price,
                     "notes": line.notes
                 })
             
@@ -562,7 +642,7 @@ async def get_purchase_order_details(po_id: int):
 
 
 @app.get("/api/database/products")
-async def get_products(limit: int = 100):
+def get_products(limit: int = 100):
     """
     Get all products from the production database.
     
@@ -603,7 +683,7 @@ async def get_products(limit: int = 100):
 
 
 @app.get("/api/database/suppliers")
-async def get_suppliers(limit: int = 100):
+def get_suppliers(limit: int = 100):
     """
     Get all suppliers from the production database.
     
@@ -644,7 +724,7 @@ async def get_suppliers(limit: int = 100):
 
 
 @app.get("/api/database/purchase-order-lines")
-async def get_purchase_order_lines(limit: int = 100, po_id: Optional[int] = None):
+def get_purchase_order_lines(limit: int = 100, po_id: Optional[int] = None):
     """
     Get all purchase order lines or filter by PO ID.
     
@@ -675,8 +755,6 @@ async def get_purchase_order_lines(limit: int = 100, po_id: Optional[int] = None
                     "product_id": line.product_id,
                     "quantity": line.quantity,
                     "delivery_date": line.delivery_date.isoformat() if line.delivery_date else None,
-                    "unit_price": line.unit_price,
-                    "total_price": line.total_price,
                     "notes": line.notes
                 })
             
@@ -693,7 +771,7 @@ async def get_purchase_order_lines(limit: int = 100, po_id: Optional[int] = None
 
 
 @app.get("/api/database/supplier-products")
-async def get_supplier_products(limit: int = 100, supplier_id: Optional[int] = None):
+def get_supplier_products(limit: int = 100, supplier_id: Optional[int] = None):
     """
     Get all supplier-product mappings or filter by supplier ID.
     
@@ -742,7 +820,7 @@ async def get_supplier_products(limit: int = 100, supplier_id: Optional[int] = N
 # ============================================================================
 
 @app.get("/api/updates/extraction/{extraction_id}")
-async def get_updates_for_extraction(extraction_id: int):
+def get_updates_for_extraction(extraction_id: int):
     """
     Get all database updates from a specific extraction.
     Shows what changes were made to which tables.
@@ -754,7 +832,7 @@ async def get_updates_for_extraction(extraction_id: int):
         List of database updates with details
     """
     try:
-        updates = update_tracker.get_updates_for_extraction(extraction_id)
+        updates = get_update_tracker().get_updates_for_extraction(extraction_id)
         
         return {
             "success": True,
@@ -782,7 +860,7 @@ async def get_updates_for_extraction(extraction_id: int):
 
 
 @app.get("/api/update/{update_id}")
-async def get_update_details(update_id: int):
+def get_update_details(update_id: int):
     """
     Get detailed information about a specific database update.
     
@@ -801,7 +879,7 @@ async def get_update_details(update_id: int):
         Complete update details
     """
     try:
-        update = update_tracker.get_update_details(update_id)
+        update = get_update_tracker().get_update_details(update_id)
         
         if not update:
             raise HTTPException(status_code=404, detail="Update not found")
@@ -837,7 +915,7 @@ async def get_update_details(update_id: int):
 
 
 @app.get("/api/updates/pending")
-async def get_pending_approvals():
+def get_pending_approvals():
     """
     Get all updates awaiting approval.
     
@@ -845,7 +923,7 @@ async def get_pending_approvals():
         List of updates needing human review
     """
     try:
-        updates = update_tracker.get_pending_approvals()
+        updates = get_update_tracker().get_pending_approvals()
         
         return {
             "success": True,
@@ -871,7 +949,7 @@ async def get_pending_approvals():
 
 
 @app.post("/api/update/{update_id}/approve")
-async def approve_update(update_id: int, approver: str = Form(...), notes: str = Form(None)):
+def approve_update(update_id: int, approver: str = Form(...), notes: str = Form(None)):
     """
     Approve a database update.
     
@@ -884,7 +962,7 @@ async def approve_update(update_id: int, approver: str = Form(...), notes: str =
         Success confirmation
     """
     try:
-        update_tracker.approve_update(update_id, approver, notes)
+        get_update_tracker().approve_update(update_id, approver, notes)
         
         return {
             "success": True,
@@ -896,7 +974,7 @@ async def approve_update(update_id: int, approver: str = Form(...), notes: str =
 
 
 @app.post("/api/update/{update_id}/reject")
-async def reject_update(update_id: int, reviewer: str = Form(...), reason: str = Form(...)):
+def reject_update(update_id: int, reviewer: str = Form(...), reason: str = Form(...)):
     """
     Reject a database update.
     
@@ -909,7 +987,7 @@ async def reject_update(update_id: int, reviewer: str = Form(...), reason: str =
         Success confirmation
     """
     try:
-        update_tracker.reject_update(update_id, reviewer, reason)
+        get_update_tracker().reject_update(update_id, reviewer, reason)
         
         return {
             "success": True,
@@ -925,7 +1003,7 @@ async def reject_update(update_id: int, reviewer: str = Form(...), reason: str =
 # ============================================================================
 
 @app.get("/api/database/{table_name}/changes")
-async def get_table_changes(table_name: str, limit: int = 100):
+def get_table_changes(table_name: str, limit: int = 100):
     """
     Get all recent changes for a specific database table.
     Returns changes grouped by record_id for easy display in UI.
@@ -942,7 +1020,7 @@ async def get_table_changes(table_name: str, limit: int = 100):
         from sqlalchemy.orm import Session as SQLSession
         from audit.update_tracker import DatabaseUpdate, Base
         
-        session = SQLSession(update_tracker.engine)
+        session = SQLSession(get_update_tracker().engine)
         
         try:
             # Get all updates for this table
@@ -988,7 +1066,7 @@ async def get_table_changes(table_name: str, limit: int = 100):
 
 
 @app.get("/api/database/{table_name}/{record_id}/changes")
-async def get_record_changes(table_name: str, record_id: str):
+def get_record_changes(table_name: str, record_id: str):
     """
     Get all changes for a specific record in a table.
     
@@ -1004,7 +1082,7 @@ async def get_record_changes(table_name: str, record_id: str):
         from sqlalchemy.orm import Session as SQLSession
         from audit.update_tracker import DatabaseUpdate
         
-        session = SQLSession(update_tracker.engine)
+        session = SQLSession(get_update_tracker().engine)
         
         try:
             updates = session.query(DatabaseUpdate).filter(
@@ -1017,7 +1095,7 @@ async def get_record_changes(table_name: str, record_id: str):
                 # Get extraction details if available
                 extraction_data = None
                 if u.extraction_id:
-                    extraction = orchestrator.audit.get_extraction(u.extraction_id)
+                    extraction = get_orchestrator().audit.get_extraction(u.extraction_id)
                     if extraction:
                         extraction_data = {
                             "id": extraction.get("id"),
@@ -1060,10 +1138,12 @@ async def get_record_changes(table_name: str, record_id: str):
 
 
 @app.get("/api/document-by-path")
-async def get_document_by_path(path: str):
+def get_document_by_path(path: str):
     """
     Get a document file by its path.
     Used by the source document viewer.
+    
+    Note: Using def (not async def) to run in thread pool.
     
     Args:
         path: Path to the document file
@@ -1116,6 +1196,33 @@ async def get_document_by_path(path: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# SERVE FRONTEND (Static Files) - Must be at END of file
+# ============================================================================
+
+FRONTEND_DIR = Path("frontend/dist")
+
+if FRONTEND_DIR.exists():
+    # Serve static assets (JS, CSS, images)
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="assets")
+    
+    # Serve vite.svg if it exists
+    if (FRONTEND_DIR / "vite.svg").exists():
+        @app.get("/vite.svg")
+        async def serve_vite_svg():
+            return FileResponse(FRONTEND_DIR / "vite.svg")
+    
+    # Catch-all route for SPA - serve index.html for all non-API routes
+    # This must be the LAST route defined
+    @app.get("/{full_path:path}")
+    async def serve_frontend(request: Request, full_path: str):
+        """Serve the React frontend for all non-API routes."""
+        # Don't serve index.html for API routes (they should 404 if not found)
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API endpoint not found")
+        return FileResponse(FRONTEND_DIR / "index.html")
 
 
 if __name__ == "__main__":

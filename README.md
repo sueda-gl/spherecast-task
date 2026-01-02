@@ -45,8 +45,6 @@ Document (PDF/Image) → LLM (Vision) → Structured JSON → Database
       "sku_alternatives": ["SKU13", "SKU-13"],
       "description": "PRODUCT ONE | GLOBAL VERSION updated v3",
       "quantity": 15000,
-      "unit_price": 2.50,
-      "total_price": 37500.00,
       "delivery_date": "2027-02-01",
       "notes": null
     }

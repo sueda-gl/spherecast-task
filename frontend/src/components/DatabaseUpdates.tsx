@@ -1,4 +1,4 @@
-import { Database, Edit3, PlusCircle, Eye } from 'lucide-react'
+import { Database, Edit3, PlusCircle, Eye, Brain } from 'lucide-react'
 import { useState } from 'react'
 
 interface DatabaseUpdate {

@@ -175,7 +175,7 @@ class RichSchemaBuilder:
             # Purchase order lines
             result = conn.execute(text("""
                 SELECT pol.id, pol.purchase_order_id, pol.product_id, p.sku,
-                       pol.quantity, pol.delivery_date, pol.total_price
+                       pol.quantity, pol.delivery_date
                 FROM purchase_order_line pol
                 JOIN product p ON pol.product_id = p.id
             """))

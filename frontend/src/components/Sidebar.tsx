@@ -1,11 +1,15 @@
-import { Upload, Database, Eye } from 'lucide-react'
+import { Upload, Database, Eye, Loader2 } from 'lucide-react'
+import type { ProcessingState } from '../App'
 
 interface SidebarProps {
   currentPage: string
   onNavigate: (page: 'upload' | 'extractions' | 'database') => void
+  processingState?: ProcessingState
 }
 
-export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
+export default function Sidebar({ currentPage, onNavigate, processingState }: SidebarProps) {
+  const isProcessing = processingState?.type === 'processing_db'
+  
   const navItems = [
     { name: 'Upload', icon: <Upload size={18} />, page: 'upload' as const },
     { name: 'Extractions', icon: <Eye size={18} />, page: 'extractions' as const },
@@ -30,6 +34,7 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
           {navItems.map((item) => {
             const isActive = item.page === currentPage
             const isDisabled = item.page === null
+            const showProcessingIndicator = item.page === 'upload' && isProcessing
             
             return (
               <li key={item.name}>
@@ -45,16 +50,37 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
                         ? 'text-gray-600 cursor-not-allowed'
                         : 'text-gray-400 hover:text-white hover:bg-dark-hover'
                     }
+                    ${showProcessingIndicator && !isActive ? 'bg-amber-500/10 border border-amber-500/30' : ''}
                   `}
                 >
-                  <span className={isActive ? 'text-blue-400' : ''}>{item.icon}</span>
+                  <span className={isActive ? 'text-blue-400' : showProcessingIndicator ? 'text-amber-400' : ''}>
+                    {showProcessingIndicator ? <Loader2 size={18} className="animate-spin" /> : item.icon}
+                  </span>
                   <span className="flex-1">{item.name}</span>
+                  {showProcessingIndicator && (
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  )}
                 </button>
               </li>
             )
           })}
         </ul>
       </nav>
+      
+      {/* Processing Status in Sidebar */}
+      {isProcessing && (
+        <div className="px-3 pb-4">
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+            <div className="flex items-center gap-2 text-amber-400 text-xs font-medium mb-1">
+              <Loader2 size={12} className="animate-spin" />
+              <span>Database Updating</span>
+            </div>
+            <p className="text-[10px] text-amber-300/70">
+              Extraction #{processingState?.extractionId || processingState?.result?.extraction_id}
+            </p>
+          </div>
+        </div>
+      )}
     </aside>
   )
 }

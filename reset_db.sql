@@ -48,8 +48,6 @@ CREATE TABLE purchase_order_line (
     product_id INTEGER NOT NULL,
     quantity INTEGER NOT NULL,
     delivery_date DATE,
-    unit_price FLOAT,
-    total_price FLOAT,
     notes TEXT,
     FOREIGN KEY (purchase_order_id) REFERENCES purchase_order(id),
     FOREIGN KEY (product_id) REFERENCES product(id)
@@ -79,14 +77,14 @@ INSERT INTO purchase_order (id, reference_num, supplier_id, delivery_date, exter
     (2, 'PO-22', 1, '2026-01-15', NULL, NULL, NULL),
     (3, 'PO-35', 2, '2026-01-15', NULL, NULL, NULL);
 
-INSERT INTO purchase_order_line (id, purchase_order_id, product_id, quantity, delivery_date, unit_price, total_price, notes) VALUES
-    (1, 1, 1, 10000, '2026-01-15', NULL, NULL, NULL),
-    (2, 1, 2, 200, '2026-01-15', NULL, NULL, NULL),
-    (3, 1, 3, 300, '2026-01-15', NULL, NULL, NULL),
-    (4, 1, 5, 15000, '2026-01-15', NULL, NULL, NULL),
-    (5, 2, 1, 1, '2026-01-15', NULL, NULL, NULL),
-    (6, 2, 5, 1, '2026-01-15', NULL, NULL, NULL),
-    (7, 3, 1, 1000, '2026-01-15', NULL, NULL, NULL);
+INSERT INTO purchase_order_line (id, purchase_order_id, product_id, quantity, delivery_date, notes) VALUES
+    (1, 1, 1, 10000, '2026-01-15', NULL),
+    (2, 1, 2, 200, '2026-01-15', NULL),
+    (3, 1, 3, 300, '2026-01-15', NULL),
+    (4, 1, 5, 15000, '2026-01-15', NULL),
+    (5, 2, 1, 1, '2026-01-15', NULL),
+    (6, 2, 5, 1, '2026-01-15', NULL),
+    (7, 3, 1, 1000, '2026-01-15', NULL);
 
 COMMIT;
 

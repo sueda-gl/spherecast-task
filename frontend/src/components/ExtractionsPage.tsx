@@ -1,7 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { ChevronRight, CheckCircle, AlertCircle, Clock, FileText, Download, Code, Brain, Database } from 'lucide-react'
-import ReasoningTrail from './ReasoningTrail'
-import DatabaseUpdates from './DatabaseUpdates'
+import { ChevronRight, CheckCircle, AlertCircle, Clock, FileText, Code } from 'lucide-react'
 
 interface Extraction {
   id: number
@@ -22,90 +20,36 @@ interface Extraction {
   reviewed_at?: string
 }
 
-type TabType = 'json' | 'reasoning' | 'updates'
-
-function ExtractionTabs({ extraction }: { extraction: Extraction }) {
-  const [activeTab, setActiveTab] = useState<TabType>('reasoning')
-
-  const tabs = [
-    { id: 'reasoning' as TabType, label: 'LLM Reasoning', icon: Brain },
-    { id: 'updates' as TabType, label: 'DB Changes', icon: Database },
-    { id: 'json' as TabType, label: 'Raw JSON', icon: Code },
-  ]
-
-  // Extract reasoning trail and database updates from processing result
-  // Data is nested under processing_result.result due to API structure
-  const processingData = extraction.processing_result?.result || extraction.processing_result || {}
-  const reasoningTrail = processingData.reasoning_trail || []
-  const operations = processingData.operations || []
-  const summary = processingData.summary
-  const confidence = processingData.confidence
-  const databaseUpdates = extraction.database_updates || []
-
+function ExtractionJsonView({ extraction }: { extraction: Extraction }) {
   return (
     <div className="bg-dark-surface border border-dark-border rounded-lg h-full flex flex-col">
-      {/* Tab Header */}
+      {/* Header */}
       <div className="border-b border-dark-border">
-        <div className="flex">
-          {tabs.map((tab) => {
-            const Icon = tab.icon
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex-1 px-4 py-3 text-sm font-medium transition-colors border-b-2 ${
-                  activeTab === tab.id
-                    ? 'border-blue-500 text-white bg-dark-hover/50'
-                    : 'border-transparent text-gray-400 hover:text-white hover:bg-dark-hover/30'
-                }`}
-              >
-                <div className="flex items-center justify-center gap-2">
-                  <Icon size={16} />
-                  <span>{tab.label}</span>
-                </div>
-              </button>
-            )
-          })}
+        <div className="flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium text-white bg-dark-hover/50 border-b-2 border-blue-500">
+          <Code size={16} />
+          <span>Raw JSON</span>
         </div>
       </div>
 
-      {/* Tab Content */}
+      {/* Content */}
       <div className="flex-1 overflow-auto p-4">
-        {activeTab === 'reasoning' && (
-          <ReasoningTrail
-            reasoning={reasoningTrail}
-            operations={operations}
-            summary={summary}
-            confidence={confidence}
-          />
-        )}
-
-        {activeTab === 'updates' && (
-          <DatabaseUpdates
-            updates={databaseUpdates}
-            documentPath={extraction.document_path}
-          />
-        )}
-
-        {activeTab === 'json' && (
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-white">Extracted Data (JSON)</h3>
-              <button
-                onClick={() => {
-                  const json = JSON.stringify(extraction.extraction_result, null, 2)
-                  navigator.clipboard.writeText(json)
-                }}
-                className="text-xs px-3 py-1.5 bg-dark-bg hover:bg-dark-hover border border-dark-border rounded text-gray-300 transition-colors"
-              >
-                Copy JSON
-              </button>
-            </div>
-            <pre className="text-xs text-gray-300 font-mono bg-dark-bg p-4 rounded border border-dark-border overflow-x-auto">
-              {JSON.stringify(extraction.extraction_result, null, 2)}
-            </pre>
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-white">Extracted Data (JSON)</h3>
+            <button
+              onClick={() => {
+                const json = JSON.stringify(extraction.extraction_result, null, 2)
+                navigator.clipboard.writeText(json)
+              }}
+              className="text-xs px-3 py-1.5 bg-dark-bg hover:bg-dark-hover border border-dark-border rounded text-gray-300 transition-colors"
+            >
+              Copy JSON
+            </button>
           </div>
-        )}
+          <pre className="text-xs text-gray-300 font-mono bg-dark-bg p-4 rounded border border-dark-border overflow-x-auto">
+            {JSON.stringify(extraction.extraction_result, null, 2)}
+          </pre>
+        </div>
       </div>
     </div>
   )
@@ -444,10 +388,10 @@ export default function ExtractionsPage() {
             )}
           </div>
 
-          {/* Right: Tabs for different views */}
+          {/* Right: JSON Output */}
           <div>
             {selectedExtraction ? (
-              <ExtractionTabs extraction={selectedExtraction} />
+              <ExtractionJsonView extraction={selectedExtraction} />
             ) : (
               <div className="bg-dark-surface border border-dark-border rounded-lg p-12 text-center h-full flex items-center justify-center">
                 <div>

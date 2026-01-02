@@ -6,6 +6,8 @@ interface ToolCall {
   tool: string
   arguments: Record<string, any>
   result: any
+  type?: string
+  content?: string
 }
 
 interface ReasoningTrailProps {
