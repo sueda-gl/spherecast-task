@@ -65,10 +65,10 @@ def get_orchestrator():
             raise HTTPException(status_code=500, detail="OPENAI_API_KEY environment variable not set")
         _orchestrator = UniversalOrchestrator(
             api_key=api_key,
-            audit_db="database/audit.db",
-            model="gpt-5.2",
-            database_path="database/spherecast.db"
-        )
+    audit_db="database/audit.db",
+    model="gpt-5.2",
+    database_path="database/spherecast.db"
+)
     return _orchestrator
 
 def get_update_tracker():
@@ -85,6 +85,7 @@ def auto_init_database():
     Called at startup for Railway deployments (no persistent volumes).
     """
     from database.models import Base, create_tables
+    from datetime import date as dt_date
     
     db_path = Path("database/spherecast.db")
     audit_db_path = Path("database/audit.db")
@@ -94,27 +95,78 @@ def auto_init_database():
     
     # Create spherecast database if it doesn't exist or is empty
     if not db_path.exists() or db_path.stat().st_size == 0:
-        print("Initializing spherecast database...")
+        print("🔧 Initializing spherecast database...")
         engine = get_engine(str(db_path))
         create_tables(engine)
         
-        # Seed with initial data
-        from database.setup import seed_data
+        # Seed with initial data (inline to avoid import issues)
         session = get_session(engine)
         try:
-            seed_data(session)
-            print("Database initialized with seed data.")
+            # Products
+            products = [
+                Product(id=1, sku="SKU-1", title="PRODUCT ONE | GLOBAL VERSION"),
+                Product(id=2, sku="SKU-2", title="PRODUCT TWO with Vitamin A, B, C"),
+                Product(id=3, sku="SKU-3", title="-"),
+                Product(id=4, sku="SKU-4", title="(Test) Internal test for v2 of SKU-2"),
+                Product(id=5, sku="SKU-1-3", title="PRODUCT ONE | GLOBAL VERSION updated v3"),
+            ]
+            session.add_all(products)
+            
+            # Suppliers
+            suppliers = [
+                Supplier(id=1, name="Big Supplier", email="big@supplier.com"),
+                Supplier(id=2, name="Small Supplier", email="small@supplier.com"),
+            ]
+            session.add_all(suppliers)
+            session.commit()
+            
+            # Supplier Products
+            supplier_products = [
+                SupplierProduct(supplier_id=1, product_id=1, supplier_sku=None, price_per_unit=1),
+                SupplierProduct(supplier_id=1, product_id=2, supplier_sku=None, price_per_unit=1),
+                SupplierProduct(supplier_id=1, product_id=3, supplier_sku=None, price_per_unit=1),
+                SupplierProduct(supplier_id=1, product_id=5, supplier_sku="SKU13", price_per_unit=2),
+                SupplierProduct(supplier_id=2, product_id=1, supplier_sku=None, price_per_unit=1),
+            ]
+            session.add_all(supplier_products)
+            
+            # Purchase Orders
+            purchase_orders = [
+                PurchaseOrder(id=1, reference_num="PO-12", supplier_id=1, delivery_date=dt_date(2026, 1, 15)),
+                PurchaseOrder(id=2, reference_num="PO-22", supplier_id=1, delivery_date=dt_date(2026, 1, 15)),
+                PurchaseOrder(id=3, reference_num="PO-35", supplier_id=2, delivery_date=dt_date(2026, 1, 15)),
+            ]
+            session.add_all(purchase_orders)
+            session.commit()
+            
+            # Purchase Order Lines
+            po_lines = [
+                PurchaseOrderLine(id=1, purchase_order_id=1, product_id=1, quantity=10000, delivery_date=dt_date(2026, 1, 15)),
+                PurchaseOrderLine(id=2, purchase_order_id=1, product_id=2, quantity=200, delivery_date=dt_date(2026, 1, 15)),
+                PurchaseOrderLine(id=3, purchase_order_id=1, product_id=3, quantity=300, delivery_date=dt_date(2026, 1, 15)),
+                PurchaseOrderLine(id=4, purchase_order_id=1, product_id=5, quantity=15000, delivery_date=dt_date(2026, 1, 15)),
+                PurchaseOrderLine(id=5, purchase_order_id=2, product_id=1, quantity=1, delivery_date=dt_date(2026, 1, 15)),
+                PurchaseOrderLine(id=6, purchase_order_id=2, product_id=5, quantity=1, delivery_date=dt_date(2026, 1, 15)),
+                PurchaseOrderLine(id=7, purchase_order_id=3, product_id=1, quantity=1000, delivery_date=dt_date(2026, 1, 15)),
+            ]
+            session.add_all(po_lines)
+            session.commit()
+            
+            print("✅ Database initialized with seed data.")
+        except Exception as e:
+            print(f"❌ Error seeding database: {e}")
+            session.rollback()
         finally:
             session.close()
     
     # Create audit database if it doesn't exist
     if not audit_db_path.exists():
-        print("Initializing audit database...")
+        print("🔧 Initializing audit database...")
         from audit.update_tracker import Base as AuditBase
         from sqlalchemy import create_engine
         audit_engine = create_engine(f"sqlite:///{audit_db_path}")
         AuditBase.metadata.create_all(audit_engine)
-        print("Audit database initialized.")
+        print("✅ Audit database initialized.")
 
 
 # Auto-initialize databases on startup (for Railway)
