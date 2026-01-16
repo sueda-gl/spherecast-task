@@ -6,3 +6,4 @@ from .update_tracker import UpdateAuditTracker, DatabaseUpdate
 
 __all__ = ['UpdateAuditTracker', 'DatabaseUpdate']
 
+

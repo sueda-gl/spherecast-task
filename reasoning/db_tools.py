@@ -419,3 +419,4 @@ class DatabaseTools:
         except Exception as e:
             return {"error": f"Tool execution failed: {str(e)}"}
 
+
