@@ -297,6 +297,7 @@ class ExtractionAudit:
                     "confidence": log.confidence,
                     "verified": log.verified,
                     "status": "auto_processed" if log.processed else ("pending_review" if log.requires_review else "requires_manual"),
+                    "processing_status": log.processing_status,  # 'extracted', 'processing', 'completed', 'failed'
                     "created_at": log.timestamp.isoformat() if log.timestamp else None,
                     "extraction_result": extraction_data,
                     "verification_report": verification_data,
