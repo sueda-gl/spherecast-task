@@ -401,17 +401,39 @@ class OperationExecutor:
                         print(f"  → Substituting {value} → {actual_id}")
                     result[key] = actual_id
                 else:
-                    # Try SKU-based lookup
-                    sku_match = re.match(r"__NEW_product_sku_(.+)", value, re.IGNORECASE)
+                    # Try SKU-based lookup (handles both __NEW_product_sku_ and __NEW_product_id_ patterns)
+                    sku_match = re.match(r"__NEW_product_(?:sku|id)_(.+)", value, re.IGNORECASE)
                     if sku_match:
                         sku = sku_match.group(1)
-                        sku_key = f"__NEW_product_sku_{sku}"
-                        if sku_key in created_ids:
-                            actual_id = created_ids[sku_key]
-                            if verbose:
-                                print(f"  → Substituting (by SKU) {value} → {actual_id}")
-                            result[key] = actual_id
-                        else:
+                        # Try multiple SKU formats (LLM may sanitize dashes to underscores)
+                        sku_variants = [
+                            sku,                           # Original: PRODUCT_11
+                            sku.replace("_", "-"),         # Dash variant: PRODUCT-11
+                            sku.replace("-", "_"),         # Underscore variant
+                        ]
+                        found = False
+                        for sku_variant in sku_variants:
+                            # Check both product_sku and product_id placeholder formats
+                            for prefix in ["__NEW_product_sku_", "__NEW_product_id_"]:
+                                sku_key = f"{prefix}{sku_variant}"
+                                if sku_key in created_ids:
+                                    actual_id = created_ids[sku_key]
+                                    if verbose:
+                                        print(f"  → Substituting (by SKU) {value} → {actual_id}")
+                                    result[key] = actual_id
+                                    found = True
+                                    break
+                                # Also try case-insensitive
+                                elif sku_key.lower() in created_ids_lower:
+                                    actual_id = created_ids_lower[sku_key.lower()]
+                                    if verbose:
+                                        print(f"  → Substituting (by SKU) {value} → {actual_id}")
+                                    result[key] = actual_id
+                                    found = True
+                                    break
+                            if found:
+                                break
+                        if not found:
                             result[key] = value  # Keep placeholder, will cause FK error
                     else:
                         result[key] = value  # Keep placeholder
